@@ -52,8 +52,8 @@ async fn main() {
         .layer(cors);
 
     let addr = tokio::net::TcpListener
-        ::bind("0.0.0.0:3000").await
-        .expect("Failed to bind port 3000");
+        ::bind("0.0.0.0:8080").await
+        .expect("Failed to bind port 8080");
     println!("🚀 WebSocket server running on ws://{:?}", addr);
     axum::serve(addr, app).await.unwrap();
 }

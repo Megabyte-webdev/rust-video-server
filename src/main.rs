@@ -13,7 +13,8 @@ mod signaling;
 
 #[tokio::main]
 async fn main() {
-    let db_url = "postgres://postgres:afowebdev@localhost/AFO_VIDEO_SDK";
+    let db_url =
+        "postgresql://neondb_owner:npg_9AMVw6gyseCu@ep-mute-haze-ampf6jkv-pooler.c-5.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require";
     let db_pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(db_url).await

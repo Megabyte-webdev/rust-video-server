@@ -129,6 +129,20 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     }
                 }
             }
+
+            "SCREEN_SHARE_START" | "SCREEN_SHARE_STOP" => {
+                if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
+                    let rooms = state.rooms.read().await;
+
+                    if let Some(room) = rooms.get(rid) {
+                        let outbound = Message::Text(txt.to_string().into());
+
+                        for sender in room.senders.values() {
+                            let _ = sender.send(outbound.clone());
+                        }
+                    }
+                }
+            }
             _ => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     let rooms = state.rooms.read().await;

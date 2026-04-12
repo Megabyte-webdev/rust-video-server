@@ -42,7 +42,10 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             continue;
         };
 
-        let msg_type = value["type"].as_str().unwrap_or("");
+        let msg_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         match msg_type {
             "JOIN" => {
@@ -99,6 +102,38 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             "Secure_Chat" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     handle_message(&state, rid, uid, &name, value).await;
+                }
+            }
+            "OFFER" | "ANSWER" | "ICE" => {
+                if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
+                    let rooms = state.rooms.read().await;
+
+                    if let Some(room) = rooms.get(rid) {
+                        let target = value.get("target").and_then(|v| v.as_str());
+
+                        // FORCE sender into message
+                        let mut msg_obj = value.clone();
+                        msg_obj["sender"] = serde_json::json!(uid);
+
+                        let outbound = Message::Text(
+                            serde_json::to_string(&msg_obj).unwrap().into()
+                        );
+
+                        match target {
+                            Some(tid) => {
+                                if let Some(sender) = room.senders.get(tid) {
+                                    let _ = sender.send(outbound);
+                                } else {
+                                    println!("❌ Target not found in room: {}", tid);
+                                }
+                            }
+                            None => {
+                                for sender in room.senders.values() {
+                                    let _ = sender.send(outbound.clone());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             _ => (),

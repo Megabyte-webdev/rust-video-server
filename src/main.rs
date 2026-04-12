@@ -8,12 +8,7 @@ mod auth;
 mod models;
 mod signaling;
 mod utils;
-use crate::{
-    routes::room::create_room,
-    socket::ws_handler::socket_response,
-    state::AppState,
-    utils::error::log_error,
-};
+use crate::{ routes::room::create_room, socket::ws_handler::socket_response, state::AppState };
 
 //use redis::Commands;
 
@@ -53,19 +48,19 @@ async fn main() {
         //redis: redis_client,
     };
 
+    // let cors = CorsLayer::new()
+    //     .allow_origin(Any) // allow all origins for testing
+    //     .allow_methods(Any)
+    //     .allow_headers(Any);
+
     let cors = CorsLayer::new()
-        .allow_origin(Any) // allow all origins for testing
+        .allow_origin([
+            "https://videosdk.vercel.app".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:5500".parse::<HeaderValue>().unwrap(),
+        ])
         .allow_methods(Any)
         .allow_headers(Any);
-
-    // let cors = CorsLayer::new()
-    //     .allow_origin([
-    //         "https://videosdk.vercel.app".parse::<HeaderValue>().unwrap(),
-    //         "http://127.0.0.1:5500".parse::<HeaderValue>().unwrap(),
-    //     ])
-    //     .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-    //     .allow_headers([axum::http::HeaderName::from_static("content-type")])
-    //     .allow_credentials(true);
+    // .allow_credentials(true);
 
     let app = Router::new()
         .route("/ws", get(socket_response))

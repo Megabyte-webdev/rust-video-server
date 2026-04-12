@@ -41,9 +41,10 @@ async fn main() {
     };
 
     let cors = CorsLayer::new()
-        .allow_origin(Any) // allow all origins for testing
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin("https://videosdk.vercel.app".parse::<axum::http::HeaderValue>().unwrap())
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_headers([axum::http::HeaderName::from_static("content-type")])
+        .allow_credentials(true);
 
     let app = Router::new()
         .route("/ws", get(ws_handler))

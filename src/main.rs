@@ -3,6 +3,8 @@ use tower_http::cors::{ CorsLayer, Any };
 use sqlx::postgres::PgPoolOptions;
 mod routes;
 use crate::{ state::AppState, ws::ws_handler, routes::room::create_room };
+use std::time::Duration;
+use tokio::time;
 //use redis::Commands;
 
 mod state;
@@ -21,6 +23,10 @@ async fn main() {
         .expect("Failed to connect to Postgres");
 
     println!("Postgres connected");
+
+    if let Ok(url) = std::env::var("APP_URL") {
+        tokio::spawn(start_keep_alive(url));
+    }
 
     // let redis_url = "redis://127.0.0.1/";
     // let redis_client = redis::Client::open(redis_url).expect("Failed to connect to Redis");
@@ -61,4 +67,18 @@ async fn main() {
         .expect(&format!("Failed to bind to {}", addr_str));
     println!("🚀 WebSocket server running on ws://{:?}", listener);
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn start_keep_alive(url: String) {
+    let client = reqwest::Client::new();
+    // Ping every 10 minutes (Render sleeps after 15)
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+
+    loop {
+        interval.tick().await;
+        match client.get(&url).send().await {
+            Ok(_) => println!("Status: Server is awake."),
+            Err(e) => eprintln!("Ping failed: {}", e),
+        }
+    }
 }

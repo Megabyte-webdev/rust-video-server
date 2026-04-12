@@ -1,25 +1,32 @@
-use axum::{ routing::{ get, post }, Router };
+use axum::{ Router, http::HeaderValue, routing::{ get, post } };
 use tower_http::cors::{ CorsLayer, Any };
 use sqlx::postgres::PgPoolOptions;
 mod routes;
-use crate::{ state::AppState, ws::ws_handler, routes::room::create_room };
-use std::time::Duration;
-use tokio::time;
-//use redis::Commands;
-
+mod socket;
 mod state;
-mod ws;
 mod auth;
 mod models;
 mod signaling;
+mod utils;
+use crate::{
+    routes::room::create_room,
+    socket::ws_handler::socket_response,
+    state::AppState,
+    utils::error::log_error,
+};
+
+//use redis::Commands;
 
 #[tokio::main]
 async fn main() {
-    let db_url =
-        "postgresql://neondb_owner:npg_9AMVw6gyseCu@ep-mute-haze-ampf6jkv-pooler.c-5.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require";
+    let db_url = std::env
+        ::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL must be set")
+        .expect("Failed to fetch DB URL");
+
     let db_pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect(db_url).await
+        .connect(&db_url).await
         .expect("Failed to connect to Postgres");
 
     println!("Postgres connected");
@@ -47,13 +54,21 @@ async fn main() {
     };
 
     let cors = CorsLayer::new()
-        .allow_origin("https://videosdk.vercel.app".parse::<axum::http::HeaderValue>().unwrap())
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-        .allow_headers([axum::http::HeaderName::from_static("content-type")])
-        .allow_credentials(true);
+        .allow_origin(Any) // allow all origins for testing
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    // let cors = CorsLayer::new()
+    //     .allow_origin([
+    //         "https://videosdk.vercel.app".parse::<HeaderValue>().unwrap(),
+    //         "http://127.0.0.1:5500".parse::<HeaderValue>().unwrap(),
+    //     ])
+    //     .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+    //     .allow_headers([axum::http::HeaderName::from_static("content-type")])
+    //     .allow_credentials(true);
 
     let app = Router::new()
-        .route("/ws", get(ws_handler))
+        .route("/ws", get(socket_response))
         .route("/rooms", post(create_room))
         .with_state(state)
         .layer(cors);

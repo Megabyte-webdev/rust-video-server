@@ -58,6 +58,6 @@ async fn main() {
     let listener = tokio::net::TcpListener
         ::bind(&addr_str).await
         .expect(&format!("Failed to bind to {}", addr_str));
-    println!("🚀 WebSocket server running on ws://{:?}", addr);
+    println!("🚀 WebSocket server running on ws://{:?}", listener);
     axum::serve(listener, app).await.unwrap();
 }

@@ -51,9 +51,13 @@ async fn main() {
         .with_state(state)
         .layer(cors);
 
-    let addr = tokio::net::TcpListener
-        ::bind("0.0.0.0:8080").await
-        .expect("Failed to bind port 8080");
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+
+    let addr_str = format!("0.0.0.0:{}", port);
+
+    let listener = tokio::net::TcpListener
+        ::bind(&addr_str).await
+        .expect(&format!("Failed to bind to {}", addr_str));
     println!("🚀 WebSocket server running on ws://{:?}", addr);
-    axum::serve(addr, app).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }

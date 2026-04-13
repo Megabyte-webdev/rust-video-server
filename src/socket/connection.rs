@@ -8,6 +8,7 @@ use crate::{
         leave::handle_leave,
         message::handle_message,
         screen_share::handle_screen_share,
+        signaling::handle_signaling,
     },
     state::AppState,
     utils::error::log_error,
@@ -106,34 +107,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             }
             "OFFER" | "ANSWER" | "ICE" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
-                    let rooms = state.rooms.read().await;
-
-                    if let Some(room) = rooms.get(rid) {
-                        let target = value.get("target").and_then(|v| v.as_str());
-
-                        // FORCE sender into message
-                        let mut msg_obj = value.clone();
-                        msg_obj["sender"] = serde_json::json!(uid);
-
-                        let outbound = Message::Text(
-                            serde_json::to_string(&msg_obj).unwrap().into()
-                        );
-
-                        match target {
-                            Some(tid) => {
-                                if let Some(sender) = room.senders.get(tid) {
-                                    let _ = sender.send(outbound);
-                                } else {
-                                    println!("❌ Target not found in room: {}", tid);
-                                }
-                            }
-                            None => {
-                                for sender in room.senders.values() {
-                                    let _ = sender.send(outbound.clone());
-                                }
-                            }
-                        }
-                    }
+                    handle_signaling(&state, rid, uid, &txt).await;
                 }
             }
             _ => (),

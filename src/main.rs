@@ -13,14 +13,14 @@ use crate::{ routes::room::create_room, socket::ws_handler::socket_response, sta
 
 #[tokio::main]
 async fn main() {
-    // let db_url = std::env
-    //     ::var("DATABASE_URL")
-    //     .map_err(|_| "DATABASE_URL must be set")
-    //     .expect("Failed to fetch DB URL");
+    let db_url = std::env
+        ::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL must be set")
+        .expect("Failed to fetch DB URL");
 
     let db_pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect("postgres://postgres:afowebdev@localhost/AFO_VIDEO_SDK").await
+        .connect(&db_url).await
         .expect("Failed to connect to Postgres");
 
     println!("Postgres connected");

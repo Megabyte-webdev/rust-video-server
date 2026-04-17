@@ -4,7 +4,8 @@ use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    socket::{ events::log_join, room_manager::{ Room, ParticipantState } },
+    services::attendance_service::AttendanceService,
+    socket::{ events::log_join, room_manager::{ ParticipantState, Room } },
     state::AppState,
     utils::error::log_error,
 };
@@ -36,6 +37,8 @@ pub async fn handle_join(
             .execute(&state.db).await,
         "Insert Room Session"
     );
+
+    AttendanceService::mark_join(&state.db, room_id, user_id).await.ok();
 
     // ---------------- UPSERT PARTICIPANT SESSION ----------------
     log_error(

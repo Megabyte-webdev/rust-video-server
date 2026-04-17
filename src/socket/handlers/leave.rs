@@ -1,7 +1,12 @@
 use axum::extract::ws::Message;
 use serde_json::json;
 
-use crate::{ socket::events::log_leave, state::AppState, utils::error::log_error };
+use crate::{
+    services::attendance_service::AttendanceService,
+    socket::events::log_leave,
+    state::AppState,
+    utils::error::log_error,
+};
 
 pub async fn handle_leave(
     state: &AppState,
@@ -12,53 +17,60 @@ pub async fn handle_leave(
 ) {
     println!("🔥 HANDLE_LEAVE CALLED");
 
-    let mut rooms = state.rooms.write().await;
+    let recipients;
 
-    if let Some(room) = rooms.get_mut(room_id) {
-        let still_connected = room.sessions
-            .iter()
-            .any(|(sid, uid)| sid != session_id && uid == user_id);
+    {
+        let mut rooms = state.rooms.write().await;
 
-        let recipients: Vec<_> = room.sessions
-            .iter()
-            .filter(|(sid, uid)| *sid != session_id && *uid != user_id)
-            .filter_map(|(sid, _)| room.senders.get(sid))
-            .cloned()
-            .collect();
+        if let Some(room) = rooms.get_mut(room_id) {
+            let still_connected = room.sessions
+                .iter()
+                .any(|(sid, uid)| sid != session_id && uid == user_id);
 
-        room.sessions.remove(session_id);
-        room.senders.remove(session_id);
+            recipients = room.sessions
+                .iter()
+                .filter(|(sid, uid)| *sid != session_id && *uid != user_id)
+                .filter_map(|(sid, _)| room.senders.get(sid))
+                .cloned()
+                .collect::<Vec<_>>();
 
-        if !still_connected {
-            room.participants.remove(user_id);
-        }
+            room.sessions.remove(session_id);
+            room.senders.remove(session_id);
 
-        // cleanup orphan senders
-        room.senders.retain(|sid, _| room.sessions.contains_key(sid));
+            if !still_connected {
+                room.participants.remove(user_id);
+            }
 
-        let leave_msg = Message::Text(
-            json!({
-                "type": "USER_LEFT",
-                "participant": {
-                    "id": user_id,
-                    "name": name,
-                    "session_id": session_id
-                }
-            })
-                .to_string()
-                .into()
-        );
+            room.senders.retain(|sid, _| room.sessions.contains_key(sid));
 
-        for tx in recipients {
-            let _ = tx.send(leave_msg.clone());
-        }
-
-        if room.senders.is_empty() {
-            println!("🧹 REMOVING EMPTY ROOM");
-            rooms.remove(room_id);
+            if room.senders.is_empty() {
+                println!("🧹 REMOVING EMPTY ROOM");
+                rooms.remove(room_id);
+            }
+        } else {
+            return;
         }
     }
 
+    // ---------------- BROADCAST ----------------
+    let leave_msg = Message::Text(
+        json!({
+            "type": "USER_LEFT",
+            "participant": {
+                "id": user_id,
+                "name": name,
+                "session_id": session_id
+            }
+        })
+            .to_string()
+            .into()
+    );
+
+    for tx in recipients {
+        let _ = tx.send(leave_msg.clone());
+    }
+
+    // ---------------- DB EVENTS ----------------
     log_error(
         sqlx
             ::query(
@@ -107,6 +119,8 @@ pub async fn handle_leave(
             .execute(&state.db).await,
         "Leaving:PARTICIPANT_SESSION_UPDATE"
     );
+
+    AttendanceService::mark_leave(&state.db, room_id, user_id).await.ok();
 
     log_leave(state, room_id, user_id, name, session_id).await;
 }

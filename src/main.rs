@@ -8,6 +8,7 @@ mod state;
 mod auth;
 mod models;
 mod utils;
+mod services;
 use crate::{ routes::room::create_room, socket::ws_handler::socket_response, state::AppState };
 
 //use redis::Commands;

@@ -19,12 +19,13 @@ pub async fn handle_message(
     let target_user = payload
         .get("target")
         .and_then(|v| v.as_str())
-        .map(str::to_string);
+        .map(|s| s.trim().to_string());
 
     let reply_to = payload.get("reply_to").cloned();
 
-    let (user_senders, sender_tx) = {
+    let (senders, target_session, sender_session) = {
         let rooms = state.rooms.read().await;
+
         let room = match rooms.get(room_id) {
             Some(r) => r,
             None => {
@@ -32,14 +33,24 @@ pub async fn handle_message(
             }
         };
 
-        (room.user_senders.clone(), room.user_senders.get(sender_id).cloned())
+        let senders = room.senders.clone();
+
+        // 🔥 IMPORTANT FIX: resolve from PARTICIPANTS (not sessions)
+        let target_session = target_user
+            .as_ref()
+            .and_then(|uid| room.participants.get(uid))
+            .map(|p| p.session_id.clone());
+
+        let sender_session = room.participants.get(sender_id).map(|p| p.session_id.clone());
+
+        (senders, target_session, sender_session)
     };
 
-    let message = Message::Text(
+    let msg = Message::Text(
         json!({
             "type": "CHAT_MESSAGE",
             "data": {
-                "id": uuid::Uuid::new_v4().to_string(),
+                "id": Uuid::new_v4().to_string(),
                 "sender_id": sender_id,
                 "sender_name": sender_name,
                 "message": text,
@@ -53,20 +64,22 @@ pub async fn handle_message(
     );
 
     // PRIVATE
-    if let Some(target) = target_user {
-        if let Some(tx) = user_senders.get(&target) {
-            let _ = tx.send(message.clone());
+    if let Some(target_session_id) = target_session {
+        if let Some(tx) = senders.get(&target_session_id) {
+            let _ = tx.send(msg.clone());
         }
 
-        if let Some(tx) = sender_tx {
-            let _ = tx.send(message);
+        if let Some(sender_session_id) = sender_session {
+            if let Some(tx) = senders.get(&sender_session_id) {
+                let _ = tx.send(msg);
+            }
         }
 
         return;
     }
 
     // BROADCAST
-    for tx in user_senders.values() {
-        let _ = tx.send(message.clone());
+    for tx in senders.values() {
+        let _ = tx.send(msg.clone());
     }
 }

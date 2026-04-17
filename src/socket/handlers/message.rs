@@ -17,32 +17,33 @@ pub async fn handle_message(
         return;
     }
 
+    // ---------------- EXTRACT TARGET (user_id) ----------------
     let target = payload
         .get("target")
         .and_then(|v| v.as_str())
         .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let reply_to = payload
-        .get("reply_to")
-        .and_then(|r| {
-            Some(
-                json!({
-            "id": r.get("id")?.as_str()?,
-            "name": r.get("name")?.as_str()?
-        })
-            )
-        });
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
 
-    // Clone senders OUTSIDE lock (important)
-    let senders = {
+    let reply_to = payload.get("reply_to").cloned();
+
+    let (senders, target_session, sender_session) = {
         let rooms = state.rooms.read().await;
 
-        match rooms.get(room_id) {
-            Some(room) => room.senders.clone(),
+        let room = match rooms.get(room_id) {
+            Some(r) => r,
             None => {
                 return;
             }
-        }
+        };
+
+        let senders = room.senders.clone();
+
+        let target_session = target.as_ref().and_then(|uid| room.sessions.get(uid).cloned());
+
+        let sender_session = room.sessions.get(sender_id).cloned();
+
+        (senders, target_session, sender_session)
     };
 
     let message_payload =
@@ -54,28 +55,29 @@ pub async fn handle_message(
             "sender_name": sender_name,
             "message": text,
             "target": target,
-            "reply_to": reply_to,  
+            "reply_to": reply_to,
             "timestamp": chrono::Utc::now().to_rfc3339()
         }
     });
 
     let msg = Message::Text(message_payload.to_string().into());
 
-    // ---------------- PRIVATE ----------------
-    if let Some(target_id) = target {
-        // PRIVATE ONLY
-        if let Some(tx) = senders.get(target_id) {
+    if let Some(target_session_id) = target_session {
+        // send to target user session
+        if let Some(tx) = senders.get(&target_session_id) {
             let _ = tx.send(msg.clone());
         }
 
-        if let Some(tx) = senders.get(sender_id) {
-            let _ = tx.send(msg);
+        // echo back to sender
+        if let Some(sender_session_id) = sender_session {
+            if let Some(tx) = senders.get(&sender_session_id) {
+                let _ = tx.send(msg);
+            }
         }
 
-        return; // HARD STOP: prevents any broadcast leakage
+        return;
     }
 
-    // BROADCAST ONLY
     for tx in senders.values() {
         let _ = tx.send(msg.clone());
     }

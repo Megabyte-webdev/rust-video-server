@@ -18,6 +18,16 @@ pub async fn handle_message(
     }
 
     let target = payload.get("target").and_then(|v| v.as_str());
+    let reply_to = payload
+        .get("reply_to")
+        .and_then(|r| {
+            Some(
+                json!({
+            "id": r.get("id")?.as_str()?,
+            "name": r.get("name")?.as_str()?
+        })
+            )
+        });
 
     // Clone senders OUTSIDE lock (important)
     let senders = {
@@ -40,6 +50,7 @@ pub async fn handle_message(
             "sender_name": sender_name,
             "message": text,
             "target": target,
+            "reply_to": reply_to,  
             "timestamp": chrono::Utc::now().to_rfc3339()
         }
     });

@@ -11,24 +11,31 @@ pub async fn handle_leave(
     session_id: &str
 ) {
     println!("🔥 HANDLE_LEAVE CALLED");
+
     let mut rooms = state.rooms.write().await;
 
     if let Some(room) = rooms.get_mut(room_id) {
-        // ---------------- REMOVE SESSION SAFELY ----------------
+        let still_connected = room.sessions
+            .iter()
+            .any(|(sid, uid)| sid != session_id && uid == user_id);
+
+        let recipients: Vec<_> = room.sessions
+            .iter()
+            .filter(|(sid, uid)| *sid != session_id && *uid != user_id)
+            .filter_map(|(sid, _)| room.senders.get(sid))
+            .cloned()
+            .collect();
+
         room.sessions.remove(session_id);
         room.senders.remove(session_id);
-
-        // ---------------- CHECK IF USER STILL HAS ACTIVE SESSIONS ----------------
-        let still_connected = room.sessions.values().any(|u| u == user_id);
 
         if !still_connected {
             room.participants.remove(user_id);
         }
 
-        // ---------------- CLEAN BROADCAST LIST FIRST ----------------
+        // cleanup orphan senders
         room.senders.retain(|sid, _| room.sessions.contains_key(sid));
 
-        // ---------------- BROADCAST LEAVE ----------------
         let leave_msg = Message::Text(
             json!({
                 "type": "USER_LEFT",
@@ -42,39 +49,32 @@ pub async fn handle_leave(
                 .into()
         );
 
-        for (sid, sender) in room.senders.iter() {
-            if let Some(owner) = room.sessions.get(sid) {
-                if owner == user_id {
-                    continue;
-                }
-
-                let _ = sender.send(leave_msg.clone());
-            }
+        for tx in recipients {
+            let _ = tx.send(leave_msg.clone());
         }
 
-        // ---------------- ROOM CLEANUP ----------------
         if room.senders.is_empty() {
+            println!("🧹 REMOVING EMPTY ROOM");
             rooms.remove(room_id);
         }
     }
 
-    // ---------------- DB EVENTS ----------------
     log_error(
         sqlx
             ::query(
                 r#"
-        INSERT INTO room_events
-        (room_id, session_id, user_id, event_type, payload)
-        VALUES ($1, $2, $3, 'LEAVE', $4)
-        "#
+            INSERT INTO room_events
+            (room_id, session_id, user_id, event_type, payload)
+            VALUES ($1, $2, $3, 'LEAVE', $4)
+            "#
             )
             .bind(room_id)
             .bind(session_id)
             .bind(user_id)
             .bind(json!({
-        "name": name,
-        "reason": "socket_closed"
-    }))
+            "name": name,
+            "reason": "socket_closed"
+        }))
             .execute(&state.db).await,
         "Leaving:ROOM_EVENT_UPDATE"
     );
@@ -83,10 +83,10 @@ pub async fn handle_leave(
         sqlx
             ::query(
                 r#"
-        UPDATE room_sessions
-        SET ended_at = NOW()
-        WHERE id = $1
-        "#
+            UPDATE room_sessions
+            SET ended_at = NOW()
+            WHERE id = $1
+            "#
             )
             .bind(session_id)
             .execute(&state.db).await,
@@ -97,11 +97,11 @@ pub async fn handle_leave(
         sqlx
             ::query(
                 r#"
-        UPDATE participant_sessions
-        SET left_at = NOW(),
-            last_seen = NOW()
-        WHERE id = $1
-        "#
+            UPDATE participant_sessions
+            SET left_at = NOW(),
+                last_seen = NOW()
+            WHERE id = $1
+            "#
             )
             .bind(session_id)
             .execute(&state.db).await,

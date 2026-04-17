@@ -100,7 +100,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     handle_screen_share(&state, rid, uid, false).await;
                 }
             }
-            "Secure_Chat" => {
+            "CHAT_MESSAGE" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     handle_message(&state, rid, uid, &name, value).await;
                 }

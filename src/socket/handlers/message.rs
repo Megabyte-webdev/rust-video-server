@@ -1,9 +1,9 @@
 use axum::extract::ws::Message;
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::state::AppState;
 
-/// Handle in-call chat messaging
 pub async fn handle_message(
     state: &AppState,
     room_id: &str,
@@ -11,52 +11,57 @@ pub async fn handle_message(
     sender_name: &str,
     payload: serde_json::Value
 ) {
-    let text = payload["text"].as_str().unwrap_or("").trim().to_string();
+    let text = payload["message"].as_str().unwrap_or("").trim().to_string();
 
     if text.is_empty() {
         return;
     }
 
-    let rooms = state.rooms.read().await;
+    let target = payload.get("target").and_then(|v| v.as_str());
 
-    let room = match rooms.get(room_id) {
-        Some(r) => r,
-        None => {
-            return;
+    // Clone senders OUTSIDE lock (important)
+    let senders = {
+        let rooms = state.rooms.read().await;
+
+        match rooms.get(room_id) {
+            Some(room) => room.senders.clone(),
+            None => {
+                return;
+            }
         }
     };
 
-    let target = payload.get("target").and_then(|v| v.as_str());
-
-    let message = Message::Text(
+    let message_payload =
         json!({
-            "type": "NEW_MESSAGE",
-            "data": {
-                "sender_id": sender_id,
-                "sender_name": sender_name,
-                "text": text,
-                "target": target,
-                "timestamp": chrono::Utc::now().to_rfc3339()
-            }
-        })
-            .to_string()
-            .into()
-    );
-
-    // -----------------------------
-    // PRIVATE MESSAGE
-    // -----------------------------
-    if let Some(target_id) = target {
-        if let Some(tx) = room.senders.get(target_id) {
-            let _ = tx.send(message);
+        "type": "CHAT_MESSAGE",
+        "data": {
+            "id": Uuid::new_v4().to_string(),
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "message": text,
+            "target": target,
+            "timestamp": chrono::Utc::now().to_rfc3339()
         }
+    });
+
+    let msg = Message::Text(message_payload.to_string().into());
+
+    // ---------------- PRIVATE ----------------
+    if let Some(target_id) = target {
+        if let Some(tx) = senders.get(target_id) {
+            let _ = tx.send(msg.clone());
+        }
+
+        // echo back to sender
+        if let Some(tx) = senders.get(sender_id) {
+            let _ = tx.send(msg);
+        }
+
         return;
     }
 
-    // -----------------------------
-    // BROADCAST MESSAGE
-    // -----------------------------
-    for tx in room.senders.values() {
-        let _ = tx.send(message.clone());
+    // ---------------- BROADCAST ----------------
+    for tx in senders.values() {
+        let _ = tx.send(msg.clone());
     }
 }

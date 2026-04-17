@@ -1,4 +1,5 @@
 use axum::{ Router, http::HeaderValue, routing::{ get, post } };
+use dotenvy::dotenv;
 use tower_http::cors::{ CorsLayer, Any };
 use sqlx::postgres::PgPoolOptions;
 mod routes;
@@ -13,6 +14,7 @@ use crate::{ routes::room::create_room, socket::ws_handler::socket_response, sta
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
     let db_url = std::env
         ::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must be set")

@@ -17,7 +17,11 @@ pub async fn handle_message(
         return;
     }
 
-    let target = payload.get("target").and_then(|v| v.as_str());
+    let target = payload
+        .get("target")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let reply_to = payload
         .get("reply_to")
         .and_then(|r| {
@@ -59,19 +63,19 @@ pub async fn handle_message(
 
     // ---------------- PRIVATE ----------------
     if let Some(target_id) = target {
+        // PRIVATE ONLY
         if let Some(tx) = senders.get(target_id) {
             let _ = tx.send(msg.clone());
         }
 
-        // echo back to sender
         if let Some(tx) = senders.get(sender_id) {
             let _ = tx.send(msg);
         }
 
-        return;
+        return; // HARD STOP: prevents any broadcast leakage
     }
 
-    // ---------------- BROADCAST ----------------
+    // BROADCAST ONLY
     for tx in senders.values() {
         let _ = tx.send(msg.clone());
     }

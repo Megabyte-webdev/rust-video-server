@@ -35,7 +35,7 @@ pub async fn handle_message(
 
         let senders = room.senders.clone();
 
-        // 🔥 IMPORTANT FIX: resolve from PARTICIPANTS (not sessions)
+        //  IMPORTANT FIX: resolve from PARTICIPANTS (not sessions)
         let target_session = target_user
             .as_ref()
             .and_then(|uid| room.participants.get(uid))

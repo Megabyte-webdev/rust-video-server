@@ -40,7 +40,6 @@ pub async fn handle_join(
 
     AttendanceService::mark_join(&state.db, room_id, user_id).await.ok();
 
-    // ---------------- UPSERT PARTICIPANT SESSION ----------------
     log_error(
         sqlx
             ::query(

@@ -114,7 +114,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     }
 
-    println!("🔴 SOCKET CLOSED");
+    println!("SOCKET CLOSED");
 
     if
         let (Some(rid), Some(uid), Some(sid)) = (
@@ -123,10 +123,10 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             session_id.clone(),
         )
     {
-        println!("🧹 CLEANING UP USER SESSION");
+        println!("CLEANING UP USER SESSION");
 
         handle_leave(&state, &rid, &uid, name.clone(), &sid).await;
 
-        println!("✅ CLEANUP COMPLETE");
+        println!("CLEANUP COMPLETE");
     }
 }

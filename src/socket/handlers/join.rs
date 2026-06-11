@@ -18,7 +18,7 @@ pub async fn handle_join(
     tx: UnboundedSender<Message>,
     incoming_session_id: &str
 ) {
-    println!("🟢 JOIN STARTED: {} -> {}", user_id, room_id);
+    println!("JOIN STARTED: {} -> {}", user_id, room_id);
 
     // ---------------- CREATE ROOM SESSION ----------------
     let rsid = uuid::Uuid::new_v4().to_string();

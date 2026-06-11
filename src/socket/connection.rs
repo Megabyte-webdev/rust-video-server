@@ -6,6 +6,7 @@ use crate::{
     socket::handlers::{
         join::handle_join,
         leave::handle_leave,
+        media_state::handle_media_state,
         message::handle_message,
         screen_share::handle_screen_share,
         signaling::handle_signaling,
@@ -99,6 +100,20 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             "SCREEN_SHARE_STOP" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     handle_screen_share(&state, rid, uid, false, None).await;
+                }
+            }
+            "MEDIA_STATE" => {
+                if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
+                    let kind = value
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let enabled = value
+                        .get("enabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    handle_media_state(&state, rid, uid, kind, enabled).await;
                 }
             }
             "CHAT_MESSAGE" => {

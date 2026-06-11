@@ -91,13 +91,14 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             }
             "SCREEN_SHARE_START" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
-                    handle_screen_share(&state, rid, uid, true).await;
+                    let stream_id = value.get("stream_id").and_then(|v| v.as_str());
+                    handle_screen_share(&state, rid, uid, true, stream_id).await;
                 }
             }
 
             "SCREEN_SHARE_STOP" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
-                    handle_screen_share(&state, rid, uid, false).await;
+                    handle_screen_share(&state, rid, uid, false, None).await;
                 }
             }
             "CHAT_MESSAGE" => {

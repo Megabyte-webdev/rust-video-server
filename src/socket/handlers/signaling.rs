@@ -56,7 +56,7 @@ pub async fn handle_signaling(state: &AppState, room_id: &str, sender_id: &str, 
             }
         }
         _ => {
-            println!("⚠️ Unknown signaling type: {}", msg_type);
+            println!("Unknown signaling type: {}", msg_type);
         }
     }
 }

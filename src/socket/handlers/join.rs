@@ -7,8 +7,18 @@ use crate::{
     services::attendance_service::AttendanceService,
     socket::{ events::log_join, room_manager::{ ParticipantState, Room } },
     state::AppState,
-    utils::error::log_error,
 };
+
+fn error_msg(message: &str) -> Message {
+    Message::Text(
+        json!({
+            "type": "ERROR",
+            "message": message
+        })
+            .to_string()
+            .into()
+    )
+}
 
 pub async fn handle_join(
     state: &AppState,
@@ -18,91 +28,116 @@ pub async fn handle_join(
     tx: UnboundedSender<Message>,
     incoming_session_id: &str
 ) {
-    let room_exists: bool = sqlx
-        ::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
-        .bind(room_id)
-        .fetch_one(&state.db).await
-        .unwrap_or(false);
+    // ---------------- CHECK ROOM EXISTS ----------------
+    let room_exists: bool = match
+        sqlx
+            ::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
+            .bind(room_id)
+            .fetch_one(&state.db).await
+    {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = tx.send(error_msg("Database error while joining room"));
+            return;
+        }
+    };
 
     if !room_exists {
-        // Send a specific error message to the client
-        let _ = tx.send(
-            Message::Text(
-                json!({
-                "type": "ERROR",
-                "message": "Room does not exist"
-            })
-                    .to_string()
-                    .into()
-            )
-        );
-        return; // Exit early; do not proceed to join
+        let _ = tx.send(error_msg("Room does not exist"));
+        return;
     }
 
     println!("JOIN STARTED: {} -> {}", user_id, room_id);
 
-    // ---------------- CREATE ROOM SESSION ----------------
+    // ---------------- START TRANSACTION ----------------
+    let mut tx_db = match state.db.begin().await {
+        Ok(t) => t,
+        Err(_) => {
+            let _ = tx.send(error_msg("Failed to start database transaction"));
+            return;
+        }
+    };
+
     let rsid = uuid::Uuid::new_v4().to_string();
 
-    log_error(
-        sqlx
+    // ---------------- ROOM SESSION ----------------
+    if
+        let Err(_) = sqlx
             ::query(
                 r#"
-            INSERT INTO room_sessions (id, room_id, started_at)
-            VALUES ($1, $2, NOW())
-            ON CONFLICT (id) DO NOTHING
-            "#
+        INSERT INTO room_sessions (id, room_id, started_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (id) DO NOTHING
+        "#
             )
             .bind(&rsid)
             .bind(room_id)
-            .execute(&state.db).await,
-        "Insert Room Session"
-    );
+            .execute(&mut *tx_db).await
+    {
+        let _ = tx.send(error_msg("Failed to create room session"));
+        return;
+    }
 
-    AttendanceService::mark_join(&state.db, room_id, user_id).await.ok();
+    // ---------------- ATTENDANCE ----------------
+    if let Err(_) = AttendanceService::mark_join(&state.db, room_id, user_id).await {
+        let _ = tx.send(error_msg("Failed to record attendance"));
+        return;
+    }
 
-    log_error(
-        sqlx
+    // ---------------- PARTICIPANT SESSION ----------------
+    if
+        let Err(_) = sqlx
             ::query(
                 r#"
-            INSERT INTO participant_sessions
-            (id, user_id, room_id, room_session_id, joined_at, last_seen)
-            VALUES ($1, $2, $3, $4, NOW(), NOW())
-            ON CONFLICT (id)
-            DO UPDATE SET
-                last_seen = NOW()
-            "#
+        INSERT INTO participant_sessions
+        (id, user_id, room_id, room_session_id, joined_at, last_seen)
+        VALUES ($1, $2, $3, $4, NOW(), NOW())
+        ON CONFLICT (id)
+        DO UPDATE SET last_seen = NOW()
+        "#
             )
             .bind(incoming_session_id)
             .bind(user_id)
             .bind(room_id)
             .bind(&rsid)
-            .execute(&state.db).await,
-        "Insert Participant Session"
-    );
+            .execute(&mut *tx_db).await
+    {
+        let _ = tx.send(error_msg("Failed to create participant session"));
+        return;
+    }
 
-    // ---------------- UPSERT PARTICIPANT ----------------
-    log_error(
-        sqlx
+    // ---------------- PARTICIPANT UPSERT ----------------
+    if
+        let Err(_) = sqlx
             ::query(
                 r#"
-            INSERT INTO participants (id, room_id, name, first_joined_at, last_seen)
-            VALUES ($1, $2, $3, NOW(), NOW())
-            ON CONFLICT (id, room_id)
-            DO UPDATE SET
-                last_seen = NOW(),
-                name = EXCLUDED.name,
-                first_joined_at = participants.first_joined_at
-            "#
+        INSERT INTO participants (id, room_id, name, first_joined_at, last_seen)
+        VALUES ($1, $2, $3, NOW(), NOW())
+        ON CONFLICT (id, room_id)
+        DO UPDATE SET
+            last_seen = NOW(),
+            name = EXCLUDED.name
+        "#
             )
             .bind(user_id)
             .bind(room_id)
             .bind(name)
-            .execute(&state.db).await,
-        "Insert Participant"
-    );
+            .execute(&mut *tx_db).await
+    {
+        let _ = tx.send(error_msg("Failed to register participant"));
+        return;
+    }
 
-    // ---------------- ROOM LOCK ----------------
+    // ---------------- COMMIT TRANSACTION ----------------
+    if let Err(_) = tx_db.commit().await {
+        let _ = tx.send(error_msg("Failed to commit join transaction"));
+        return;
+    }
+
+    // =====================================================
+    // DB IS NOW CONSISTENT — SAFE TO MUTATE MEMORY STATE
+    // =====================================================
+
     let mut rooms = state.rooms.write().await;
 
     let room = rooms.entry(room_id.to_string()).or_insert(Room {
@@ -112,9 +147,7 @@ pub async fn handle_join(
         presenter_id: None,
     });
 
-    println!("📌 BEFORE: {:?}", room.participants.keys());
-
-    // ---------------- CLEAN OLD SESSIONS FOR USER ----------------
+    // Clean old sessions
     let old_sessions: Vec<String> = room.sessions
         .iter()
         .filter(|(_, uid)| *uid == user_id)
@@ -126,7 +159,7 @@ pub async fn handle_join(
         room.senders.remove(&sid);
     }
 
-    // ---------------- REGISTER NEW SESSION ----------------
+    // Register new session
     let session_id = incoming_session_id.to_string();
 
     room.sessions.insert(session_id.clone(), user_id.to_string());
@@ -139,8 +172,6 @@ pub async fn handle_join(
     });
 
     room.senders.insert(session_id.clone(), tx.clone());
-
-    println!("📌 AFTER: {:?}", room.participants.keys());
 
     // ---------------- EXISTING USERS ----------------
     let existing: Vec<_> = room.participants
@@ -158,10 +189,10 @@ pub async fn handle_join(
     let _ = tx.send(
         Message::Text(
             json!({
-                "type": "EXISTING_USERS",
-                "participants": existing,
-                "presenterId": room.presenter_id
-            })
+            "type": "EXISTING_USERS",
+            "participants": existing,
+            "presenterId": room.presenter_id
+        })
                 .to_string()
                 .into()
         )
@@ -186,12 +217,26 @@ pub async fn handle_join(
             if owner == user_id {
                 continue;
             }
-
-            let _ = sender.send(join_msg.clone());
         }
+
+        let _ = sender.send(join_msg.clone());
     }
 
+    // ---------------- LOG + FINAL ACK ----------------
     log_join(state, room_id, user_id, name, &session_id).await;
+
+    let _ = tx.send(
+        Message::Text(
+            json!({
+            "type": "JOINED",
+            "room_id": room_id,
+            "user_id": user_id,
+            "session_id": session_id
+        })
+                .to_string()
+                .into()
+        )
+    );
 
     println!("✅ JOIN COMPLETE");
 }

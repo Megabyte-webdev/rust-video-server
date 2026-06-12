@@ -5,6 +5,7 @@ use crate::utils::error::log_error;
 pub struct AttendanceService;
 
 impl AttendanceService {
+    // ---------------- JOIN ----------------
     pub async fn mark_join(db: &PgPool, room_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
         sqlx
             ::query(
@@ -13,14 +14,25 @@ impl AttendanceService {
                 room_id,
                 user_id,
                 first_joined_at,
+                session_started_at,
                 last_left_at,
                 reconnect_count,
-                status
+                status,
+                total_active_seconds
             )
-            VALUES ($1, $2, NOW(), NULL, 1, 'active')
+            VALUES (
+                $1, $2,
+                NOW(),
+                NOW(),
+                NULL,
+                1,
+                'active',
+                0
+            )
             ON CONFLICT (room_id, user_id)
             DO UPDATE SET
                 reconnect_count = meeting_attendance.reconnect_count + 1,
+                session_started_at = NOW(),
                 status = 'active'
             "#
             )
@@ -31,23 +43,23 @@ impl AttendanceService {
         Ok(())
     }
 
-    pub async fn mark_leave(
-        db: &sqlx::PgPool,
-        room_id: &str,
-        user_id: &str
-    ) -> Result<(), sqlx::Error> {
+    // ---------------- LEAVE ----------------
+    pub async fn mark_leave(db: &PgPool, room_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
         sqlx
             ::query(
                 r#"
-        UPDATE meeting_attendance
-        SET
-            last_left_at = NOW(),
-            status = 'left',
-            total_active_seconds =
-                COALESCE(total_active_seconds, 0) +
-                EXTRACT(EPOCH FROM (NOW() - first_joined_at))::BIGINT
-        WHERE room_id = $1 AND user_id = $2
-        "#
+            UPDATE meeting_attendance
+            SET
+                last_left_at = NOW(),
+                status = 'left',
+                total_active_seconds =
+                    COALESCE(total_active_seconds, 0)
+                    + COALESCE(
+                        EXTRACT(EPOCH FROM (NOW() - session_started_at))::BIGINT,
+                        0
+                    )
+            WHERE room_id = $1 AND user_id = $2
+            "#
             )
             .bind(room_id)
             .bind(user_id)
@@ -56,20 +68,21 @@ impl AttendanceService {
         Ok(())
     }
 
-    pub async fn mark_active(db: &PgPool, room_id: &str, user_id: &str) {
-        log_error(
-            sqlx
-                ::query(
-                    r#"
+    // ---------------- HEARTBEAT / ACTIVE ----------------
+    pub async fn mark_active(db: &PgPool, room_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
+        sqlx
+            ::query(
+                r#"
             UPDATE meeting_attendance
-            SET status = 'active'
+            SET
+                status = 'active'
             WHERE room_id = $1 AND user_id = $2
             "#
-                )
-                .bind(room_id)
-                .bind(user_id)
-                .execute(db).await,
-            "Attendace Marking"
-        );
+            )
+            .bind(room_id)
+            .bind(user_id)
+            .execute(db).await?;
+
+        Ok(())
     }
 }

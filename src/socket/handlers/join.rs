@@ -7,18 +7,8 @@ use crate::{
     services::attendance_service::AttendanceService,
     socket::{ events::log_join, room_manager::{ ParticipantState, Room } },
     state::AppState,
+    utils::error::error_msg,
 };
-
-fn error_msg(message: &str) -> Message {
-    Message::Text(
-        json!({
-            "type": "ERROR",
-            "message": message
-        })
-            .to_string()
-            .into()
-    )
-}
 
 pub async fn handle_join(
     state: &AppState,

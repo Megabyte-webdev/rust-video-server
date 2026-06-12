@@ -30,6 +30,7 @@ CREATE TABLE public.meeting_attendance (
     room_id text NOT NULL,
     user_id text NOT NULL,
     first_joined_at timestamp without time zone,
+     session_started_at TIMESTAMP,
     last_left_at timestamp without time zone,
     total_active_seconds bigint DEFAULT 0,
     reconnect_count integer DEFAULT 0,

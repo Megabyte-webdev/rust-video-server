@@ -5,9 +5,10 @@ pub struct AttendanceService;
 impl AttendanceService {
     // ---------------- JOIN ----------------
     pub async fn mark_join(db: &PgPool, room_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
-        sqlx
-            ::query(
-                r#"
+        match
+            sqlx
+                ::query(
+                    r#"
             INSERT INTO meeting_attendance (
                 room_id,
                 user_id,
@@ -33,12 +34,17 @@ impl AttendanceService {
                 session_started_at = NOW(),
                 status = 'active'
             "#
-            )
-            .bind(room_id)
-            .bind(user_id)
-            .execute(db).await?;
-
-        Ok(())
+                )
+                .bind(room_id)
+                .bind(user_id)
+                .execute(db).await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                eprintln!("Attendance insert failed: {:#?}", e);
+                Err(e)
+            }
+        }
     }
 
     // ---------------- LEAVE ----------------

@@ -1,7 +1,4 @@
 use sqlx::PgPool;
-
-use crate::utils::error::log_error;
-
 pub struct AttendanceService;
 
 impl AttendanceService {

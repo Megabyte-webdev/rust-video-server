@@ -88,6 +88,7 @@ pub async fn handle_join(
         participants: HashMap::new(),
         sessions: HashMap::new(),
         senders: HashMap::new(),
+        presenter_id: None,
     });
 
     println!("📌 BEFORE: {:?}", room.participants.keys());
@@ -137,7 +138,8 @@ pub async fn handle_join(
         Message::Text(
             json!({
                 "type": "EXISTING_USERS",
-                "participants": existing
+                "participants": existing,
+                "presenterId": room.presenter_id
             })
                 .to_string()
                 .into()

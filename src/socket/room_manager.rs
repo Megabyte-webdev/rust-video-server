@@ -14,6 +14,7 @@ pub struct Room {
     pub participants: HashMap<String, ParticipantState>, // user_id -> state
     pub sessions: HashMap<String, String>, // session_id -> user_id
     pub senders: HashMap<String, UnboundedSender<Message>>, // session_id -> sender
+    pub presenter_id: Option<String>,
 }
 
 pub type Rooms = std::sync::Arc<RwLock<HashMap<String, Room>>>;

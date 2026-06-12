@@ -18,6 +18,27 @@ pub async fn handle_join(
     tx: UnboundedSender<Message>,
     incoming_session_id: &str
 ) {
+    let room_exists: bool = sqlx
+        ::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
+        .bind(room_id)
+        .fetch_one(&state.db).await
+        .unwrap_or(false);
+
+    if !room_exists {
+        // Send a specific error message to the client
+        let _ = tx.send(
+            Message::Text(
+                json!({
+                "type": "ERROR",
+                "message": "Room does not exist"
+            })
+                    .to_string()
+                    .into()
+            )
+        );
+        return; // Exit early; do not proceed to join
+    }
+
     println!("JOIN STARTED: {} -> {}", user_id, room_id);
 
     // ---------------- CREATE ROOM SESSION ----------------

@@ -11,7 +11,6 @@ impl AttendanceService {
                 room_id,
                 user_id,
                 first_joined_at,
-                session_started_at,
                 last_left_at,
                 reconnect_count,
                 status,
@@ -19,7 +18,6 @@ impl AttendanceService {
             )
             VALUES (
                 $1, $2,
-                NOW(),
                 NOW(),
                 NULL,
                 1,
@@ -29,7 +27,6 @@ impl AttendanceService {
             ON CONFLICT (room_id, user_id)
             DO UPDATE SET
                 reconnect_count = meeting_attendance.reconnect_count + 1,
-                session_started_at = NOW(),
                 status = 'active'
             "#
             )

@@ -12,7 +12,6 @@ use crate::{
         signaling::handle_signaling,
     },
     state::AppState,
-    utils::error::log_error,
 };
 
 pub async fn handle_socket(socket: WebSocket, state: AppState) {
@@ -71,25 +70,24 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
 
             "PING" => {
                 if let (Some(rid), Some(uid), Some(rsid)) = (&room_id, &user_id, &session_id) {
-                    log_error(
-                        sqlx
-                            ::query(
-                                r#"
-                        UPDATE participant_sessions
-                        SET last_seen = NOW()
-                        WHERE user_id = $1
-                        AND room_id = $2
-                        AND room_session_id = $3
-                        "#
-                            )
-                            .bind(uid)
-                            .bind(rid)
-                            .bind(rsid)
-                            .execute(&state.db).await,
-                        "PARTICIPANT_SESSION_UPDATE_FAILED"
-                    );
+                    let _ = sqlx
+                        ::query(
+                            r#"
+            UPDATE participant_sessions
+            SET last_seen = NOW()
+            WHERE user_id = $1
+            AND room_id = $2
+            AND room_session_id = $3
+            "#
+                        )
+                        .bind(uid)
+                        .bind(rid)
+                        .bind(rsid)
+                        .execute(&state.db).await;
                 }
+                let _ = tx.send(Message::Text(r#"{"type":"PONG"}"#.to_string().into()));
             }
+
             "SCREEN_SHARE_START" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     let stream_id = value.get("stream_id").and_then(|v| v.as_str());

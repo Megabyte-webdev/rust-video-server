@@ -1,11 +1,7 @@
 use axum::extract::ws::Message;
 use serde_json::json;
 
-use crate::{
-    services::attendance_service::AttendanceService,
-    state::AppState,
-    utils::error::error_msg,
-};
+use crate::{ services::attendance_service::AttendanceService, state::AppState };
 pub async fn handle_leave(
     state: &AppState,
     room_id: &str,

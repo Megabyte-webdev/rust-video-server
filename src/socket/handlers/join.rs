@@ -69,7 +69,7 @@ pub async fn handle_join(
     }
 
     // ---------------- ATTENDANCE ----------------
-    if let Err(_) = AttendanceService::mark_join(&state.db, room_id, user_id).await {
+    if let Err(_) = AttendanceService::mark_join(&state.db, room_id, user_id, name).await {
         let _ = tx.send(error_msg("Failed to record attendance"));
         return;
     }
@@ -80,8 +80,8 @@ pub async fn handle_join(
             ::query(
                 r#"
         INSERT INTO participant_sessions
-        (id, user_id, room_id, room_session_id, joined_at, last_seen)
-        VALUES ($1, $2, $3, $4, NOW(), NOW())
+        (id, user_id, room_id, name, room_session_id, joined_at, last_seen)
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
         ON CONFLICT (id)
         DO UPDATE SET last_seen = NOW()
         "#
@@ -89,6 +89,7 @@ pub async fn handle_join(
             .bind(incoming_session_id)
             .bind(user_id)
             .bind(room_id)
+            .bind(name)
             .bind(&rsid)
             .execute(&mut *tx_db).await
     {
@@ -123,10 +124,6 @@ pub async fn handle_join(
         let _ = tx.send(error_msg("Failed to commit join transaction"));
         return;
     }
-
-    // =====================================================
-    // DB IS NOW CONSISTENT — SAFE TO MUTATE MEMORY STATE
-    // =====================================================
 
     let mut rooms = state.rooms.write().await;
 

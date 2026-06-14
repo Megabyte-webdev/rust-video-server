@@ -9,7 +9,11 @@ mod auth;
 mod models;
 mod utils;
 mod services;
-use crate::{ routes::room::create_room, socket::ws_handler::socket_response, state::AppState };
+use crate::{
+    routes::room::create_room,
+    socket::{ handlers::cleanup::cleanup_stale_sessions, ws_handler::socket_response },
+    state::AppState,
+};
 
 //use redis::Commands;
 
@@ -57,6 +61,20 @@ async fn main() {
 
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
     // .allow_credentials(true);
+
+    // tokio::spawn({
+    //     let state = state.clone();
+
+    //     async move {
+    //         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+
+    //         loop {
+    //             interval.tick().await;
+
+    //             cleanup_stale_sessions(&state).await;
+    //         }
+    //     }
+    // });
 
     let app = Router::new()
         .route("/ws", get(socket_response))

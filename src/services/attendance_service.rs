@@ -4,7 +4,12 @@ pub struct AttendanceService;
 
 impl AttendanceService {
     // ---------------- JOIN ----------------
-    pub async fn mark_join(db: &PgPool, room_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
+    pub async fn mark_join(
+        db: &PgPool,
+        room_id: &str,
+        user_id: &str,
+        name: &str
+    ) -> Result<(), sqlx::Error> {
         match
             sqlx
                 ::query(
@@ -12,6 +17,7 @@ impl AttendanceService {
             INSERT INTO meeting_attendance (
                 room_id,
                 user_id,
+                name,
                 first_joined_at,
                 session_started_at,
                 last_left_at,
@@ -20,7 +26,7 @@ impl AttendanceService {
                 total_active_seconds
             )
             VALUES (
-                $1, $2,
+                $1, $2, $3,
                 NOW(),
                 NOW(),
                 NULL,
@@ -37,6 +43,7 @@ impl AttendanceService {
                 )
                 .bind(room_id)
                 .bind(user_id)
+                .bind(name)
                 .execute(db).await
         {
             Ok(_) => Ok(()),

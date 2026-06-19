@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use axum::extract::ws::Message;
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
+use base64::{ engine::general_purpose::STANDARD, Engine };
 use hmac::{ Hmac, Mac, KeyInit };
 use sha1::Sha1;
 use chrono::Utc;
@@ -27,8 +28,8 @@ pub async fn handle_join(
         .map_err(|_| "TURN SERVER must be set")
         .expect("Failed to fetch TURN SERVER");
 
-    let timestamp = Utc::now().timestamp();
-    let username = format!("{}:{}", timestamp, user_id);
+    let expiration = Utc::now().timestamp() + 24 * 3600;
+    let username = format!("{}:{}", expiration, user_id);
 
     let mut mac = Hmac::<Sha1>
         ::new_from_slice(auth_secret.as_bytes())
@@ -36,10 +37,11 @@ pub async fn handle_join(
     mac.update(username.as_bytes());
     let result = mac.finalize().into_bytes();
 
-    let credential: String = result
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect();
+    // Base64 encode (CORRECT)
+    let credential = STANDARD.encode(result);
+    println!("✅ Generated credentials:");
+    println!("  username: {}: {}", name, username);
+    println!("  credential: {}", credential);
 
     // ---------------- CHECK ROOM EXISTS & FETCH NAME ----------------
     let room_name: String = match

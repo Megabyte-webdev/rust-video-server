@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use axum::extract::ws::Message;
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
+use hmac::{ Hmac, Mac, KeyInit };
+use sha1::Sha1;
+use chrono::Utc;
 
 use crate::{
     services::attendance_service::AttendanceService,
@@ -18,24 +21,43 @@ pub async fn handle_join(
     tx: UnboundedSender<Message>,
     incoming_session_id: &str
 ) {
-    // ---------------- CHECK ROOM EXISTS ----------------
-    let room_exists: bool = match
+    let auth_secret = std::env::var("TURN_AUTH_SECRET").unwrap_or_else(|_| "".to_string());
+    let turn_server = std::env
+        ::var("TURN_SERVER")
+        .map_err(|_| "TURN SERVER must be set")
+        .expect("Failed to fetch TURN SERVER");
+
+    let timestamp = Utc::now().timestamp();
+    let username = format!("{}:{}", timestamp, user_id);
+
+    let mut mac = Hmac::<Sha1>
+        ::new_from_slice(auth_secret.as_bytes())
+        .expect("HMAC can take key of any size");
+    mac.update(username.as_bytes());
+    let result = mac.finalize().into_bytes();
+
+    let credential: String = result
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+
+    // ---------------- CHECK ROOM EXISTS & FETCH NAME ----------------
+    let room_name: String = match
         sqlx
-            ::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
+            ::query_scalar("SELECT name FROM rooms WHERE id = $1")
             .bind(room_id)
-            .fetch_one(&state.db).await
+            .fetch_optional(&state.db).await
     {
-        Ok(v) => v,
+        Ok(Some(name)) => name,
+        Ok(None) => {
+            let _ = tx.send(error_msg("Room does not exist"));
+            return;
+        }
         Err(_) => {
             let _ = tx.send(error_msg("Database error while joining room"));
             return;
         }
     };
-
-    if !room_exists {
-        let _ = tx.send(error_msg("Room does not exist"));
-        return;
-    }
 
     println!("JOIN STARTED: {} -> {}", user_id, room_id);
 
@@ -217,8 +239,19 @@ pub async fn handle_join(
             json!({
             "type": "JOINED",
             "room_id": room_id,
+            "room_name": room_name,
             "user_id": user_id,
-            "session_id": session_id
+            "session_id": session_id,
+             "iceServers": [
+                    {
+                        "urls": [format!("stun:{}:3478", turn_server)]
+                    },
+                    {
+                        "urls": [format!("turn:{}:3478", turn_server)],
+                        "username": username,
+                        "credential": credential
+                    }
+                ]
         })
                 .to_string()
                 .into()

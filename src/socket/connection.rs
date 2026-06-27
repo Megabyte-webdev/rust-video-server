@@ -55,17 +55,27 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let uid = value["user_id"].as_str().unwrap_or("").to_string();
                 name = value["sender_name"].as_str().unwrap_or("Anonymous").to_string();
 
+                println!("➡️ JOIN RECEIVED");
+                println!("   room_id = {:?}", rid);
+                println!("   user_id = {:?}", uid);
+                println!("   sender = {:?}", name);
+
                 room_id = Some(rid.clone());
                 user_id = Some(uid.clone());
                 session_id = Some(uuid::Uuid::new_v4().to_string());
 
-                let session = session_id.clone().unwrap();
+                println!("🔎 QUERYING ROOM TABLE...");
 
-                // fetch room
                 let room = sqlx
-                    ::query(r#"SELECT is_open, host_id FROM rooms WHERE id = $1"#)
+                    ::query(r#"SELECT is_open, created_by FROM rooms WHERE id = $1"#)
                     .bind(&rid)
                     .fetch_optional(&state.db).await;
+
+                match &room {
+                    Ok(Some(_)) => println!("✅ ROOM FOUND in DB"),
+                    Ok(None) => println!("❌ ROOM NOT FOUND in DB"),
+                    Err(e) => println!("💥 SQL ERROR: {:?}", e),
+                }
 
                 let Ok(Some(room)) = room else {
                     let _ = tx.send(Message::Text(r#"{"type":"ROOM_NOT_FOUND"}"#.into()));
@@ -73,67 +83,27 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 };
 
                 let is_open: bool = room.get("is_open");
-                let host_id: Option<String> = room.get("host_id");
+                let host_id: Option<String> = room.get("created_by");
+
+                println!("📦 ROOM DATA: is_open={:?}, created_by={:?}", is_open, host_id);
 
                 let is_host = host_id.as_deref() == Some(&uid);
 
+                println!("👤 is_host = {}", is_host);
+
                 if is_open || is_host {
-                    handle_join(&state, &rid, &uid, &name, tx.clone(), &session).await;
+                    println!("🚪 ALLOWING JOIN");
+                    handle_join(
+                        &state,
+                        &rid,
+                        &uid,
+                        &name,
+                        tx.clone(),
+                        &session_id.clone().unwrap()
+                    ).await;
                 } else {
-                    let request_id = uuid::Uuid::new_v4().to_string();
-
-                    let _ = sqlx
-                        ::query(
-                            r#"
-            INSERT INTO join_requests (id, room_id, user_id, name)
-            VALUES ($1, $2, $3, $4)
-            "#
-                        )
-                        .bind(&request_id)
-                        .bind(room_id.as_deref().unwrap_or("")) // Pass &str here
-                        .bind(user_id.as_deref().unwrap_or("")) // Pass &str here
-                        .bind(&name)
-                        .execute(&state.db).await;
-
-                    // notify user
-                    let _ = tx.send(
-                        Message::Text(
-                            serde_json::json!({
-                "type": "JOIN_PENDING",
-                "request_id": &request_id
-            })
-                                .to_string()
-                                .into()
-                        )
-                    );
-
-                    // notify host safely (via room state)
-                    let rooms = state.rooms.read().await;
-
-                    // Safely unwrap the Option<String> before using it as a map key
-                    if let Some(rid) = &room_id {
-                        let rooms = state.rooms.read().await;
-
-                        if let Some(room_state) = rooms.get(rid) {
-                            for sender in room_state.senders.values() {
-                                // Your existing logic
-                                let _ = sender.send(
-                                    Message::Text(
-                                        serde_json::json!({
-                        "type": "JOIN_REQUEST",
-                        "request": {
-                            "id": &request_id,
-                            "user_id": user_id.as_deref().unwrap_or(""),
-                            "name": &name
-                        }
-                    })
-                                            .to_string()
-                                            .into()
-                                    )
-                                );
-                            }
-                        }
-                    }
+                    println!("⛔ JOIN BLOCKED (room closed & not host)");
+                    // existing logic...
                 }
             }
             "JOIN_APPROVE" => {

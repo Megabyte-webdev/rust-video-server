@@ -102,8 +102,60 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         &session_id.clone().unwrap()
                     ).await;
                 } else {
-                    println!("⛔ JOIN BLOCKED (room closed & not host)");
-                    // existing logic...
+                    let request_id = uuid::Uuid::new_v4().to_string();
+
+                    let _ = sqlx
+                        ::query(
+                            r#"
+            INSERT INTO join_requests (id, room_id, user_id, name)
+            VALUES ($1, $2, $3, $4)
+            "#
+                        )
+                        .bind(&request_id)
+                        .bind(room_id.as_deref().unwrap_or("")) // Pass &str here
+                        .bind(user_id.as_deref().unwrap_or("")) // Pass &str here
+                        .bind(&name)
+                        .execute(&state.db).await;
+
+                    // notify user
+                    let _ = tx.send(
+                        Message::Text(
+                            serde_json::json!({
+                "type": "JOIN_PENDING",
+                "request_id": &request_id
+            })
+                                .to_string()
+                                .into()
+                        )
+                    );
+
+                    // notify host safely (via room state)
+                    let rooms = state.rooms.read().await;
+
+                    // Safely unwrap the Option<String> before using it as a map key
+                    if let Some(rid) = &room_id {
+                        let rooms = state.rooms.read().await;
+
+                        if let Some(room_state) = rooms.get(rid) {
+                            for sender in room_state.senders.values() {
+                                // Your existing logic
+                                let _ = sender.send(
+                                    Message::Text(
+                                        serde_json::json!({
+                        "type": "JOIN_REQUEST",
+                        "request": {
+                            "id": &request_id,
+                            "user_id": user_id.as_deref().unwrap_or(""),
+                            "name": &name
+                        }
+                    })
+                                            .to_string()
+                                            .into()
+                                    )
+                                );
+                            }
+                        }
+                    }
                 }
             }
             "JOIN_APPROVE" => {

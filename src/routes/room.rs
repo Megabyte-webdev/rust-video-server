@@ -93,7 +93,7 @@ pub async fn get_meeting(
     let result = sqlx
         ::query_as::<_, RoomData>(
             r#"
-        SELECT id as room_id, host_id, name
+        SELECT id as room_id, created_by, name
         FROM rooms
         WHERE id = $1
         "#

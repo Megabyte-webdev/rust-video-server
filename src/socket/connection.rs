@@ -33,8 +33,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
     let mut session_id: Option<String> = None;
     let mut name: String = "Anonymous".to_string();
 
-    println!("NEW SOCKET CONNECTION");
-
     while let Some(Ok(msg)) = receiver.next().await {
         let Message::Text(txt) = msg else {
             continue;
@@ -55,7 +53,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let uid = value["user_id"].as_str().unwrap_or("").to_string();
                 name = value["sender_name"].as_str().unwrap_or("Anonymous").to_string();
 
-                println!("➡️ JOIN RECEIVED");
+                println!("JOIN RECEIVED");
                 println!("   room_id = {:?}", rid);
                 println!("   user_id = {:?}", uid);
                 println!("   sender = {:?}", name);
@@ -64,7 +62,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 user_id = Some(uid.clone());
                 session_id = Some(uuid::Uuid::new_v4().to_string());
 
-                println!("🔎 QUERYING ROOM TABLE...");
+                println!("QUERYING ROOM TABLE...");
 
                 let room = sqlx
                     ::query(r#"SELECT is_open, created_by FROM rooms WHERE id = $1"#)
@@ -72,7 +70,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     .fetch_optional(&state.db).await;
 
                 match &room {
-                    Ok(Some(_)) => println!("✅ ROOM FOUND in DB"),
+                    Ok(Some(_)) => println!(" ROOM FOUND in DB"),
                     Ok(None) => println!("❌ ROOM NOT FOUND in DB"),
                     Err(e) => println!("💥 SQL ERROR: {:?}", e),
                 }
@@ -130,9 +128,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     );
 
                     // notify host safely (via room state)
-                    let rooms = state.rooms.read().await;
-
-                    // Safely unwrap the Option<String> before using it as a map key
                     if let Some(rid) = &room_id {
                         let rooms = state.rooms.read().await;
 
@@ -156,6 +151,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                         }
                     }
+
+                    state.rooms
+                        .write().await
+                        .get_mut(&rid)
+                        .map(|room| room.pending_users.insert(uid.clone(), tx.clone()));
                 }
             }
             "JOIN_APPROVE" => {
@@ -163,39 +163,107 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
 
                 let req = sqlx
                     ::query(r#"SELECT room_id, user_id, name FROM join_requests WHERE id = $1"#)
-                    .bind(request_id)
                     .fetch_optional(&state.db).await;
 
                 if let Ok(Some(r)) = req {
-                    // mark approved
-                    let _ = sqlx
-                        ::query(r#"UPDATE join_requests SET status = 'approved' WHERE id = $1"#)
-                        .bind(request_id)
-                        .execute(&state.db).await;
                     let r_room_id: String = r.get("room_id");
                     let r_user_id: String = r.get("user_id");
                     let r_name: String = r.get("name");
 
-                    // NOW allow full join
-                    handle_join(
-                        &state,
-                        &r_room_id,
-                        &r_user_id,
-                        &r_name,
-                        tx.clone(),
-                        &uuid::Uuid::new_v4().to_string()
-                    ).await;
+                    // Get the APPROVED USER's tx channel
+                    let user_tx = state.rooms
+                        .read().await
+                        .get(&r_room_id)
+                        .and_then(|room| room.pending_users.get(&r_user_id))
+                        .cloned();
+
+                    if let Some(user_tx) = user_tx {
+                        // Send approval message
+                        let _ = user_tx.send(
+                            Message::Text(
+                                serde_json::json!({
+                        "type": "JOIN_APPROVED",
+                        "request_id": request_id,
+                        "message": "Your join request was approved!"
+                    })
+                                    .to_string()
+                                    .into()
+                            )
+                        );
+
+                        // Update DB
+                        let _ = sqlx
+                            ::query(r#"UPDATE join_requests SET status = 'approved' WHERE id = $1"#)
+                            .bind(request_id)
+                            .execute(&state.db).await;
+
+                        handle_join(
+                            &state,
+                            &r_room_id,
+                            &r_user_id,
+                            &r_name,
+                            user_tx,
+                            &uuid::Uuid::new_v4().to_string()
+                        ).await;
+
+                        // Clean up pending user
+                        state.rooms
+                            .write().await
+                            .get_mut(&r_room_id)
+                            .map(|room| room.pending_users.remove(&r_user_id));
+                    }
                 }
             }
             "JOIN_REJECT" => {
                 let request_id = value["request_id"].as_str().unwrap_or("");
 
+                let req = sqlx
+                    ::query(r#"SELECT room_id, user_id FROM join_requests WHERE id = $1"#)
+                    .bind(request_id)
+                    .fetch_optional(&state.db).await;
+
+                let Ok(Some(req)) = req else {
+                    let _ = tx.send(
+                        Message::Text(
+                            r#"{"type":"JOIN_REJECT_FAILED","reason":"request_not_found"}"#.into()
+                        )
+                    );
+                    return;
+                };
+
+                let room_id: String = req.get("room_id");
+                let user_id: String = req.get("user_id");
+
+                // mark rejected in DB
                 let _ = sqlx
                     ::query(r#"UPDATE join_requests SET status = 'rejected' WHERE id = $1"#)
                     .bind(request_id)
                     .execute(&state.db).await;
 
-                let _ = tx.send(Message::Text(r#"{"type":"JOIN_REJECTED"}"#.into()));
+                //  Notify target user
+                let rooms = state.rooms.read().await;
+
+                if let Some(room) = rooms.get(&room_id) {
+                    //  FIX 1: Check pending_users first (where pending users actually are)
+                    if let Some(user_tx) = room.pending_users.get(&user_id) {
+                        let _ = user_tx.send(
+                            Message::Text(
+                                serde_json::json!({
+                        "type": "JOIN_REJECTED",
+                        "request_id": request_id,
+                        "reason": "Your join request was rejected"
+                    })
+                                    .to_string()
+                                    .into()
+                            )
+                        );
+                    }
+                }
+
+                state.rooms
+                    .write().await
+                    .get_mut(&room_id)
+                    .map(|room| room.pending_users.remove(&user_id));
             }
 
             "PING" => {

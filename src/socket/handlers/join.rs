@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use axum::extract::ws::Message;
 use serde_json::json;
+use sqlx::Row;
 use tokio::sync::mpsc::UnboundedSender;
 use base64::{ engine::general_purpose::STANDARD, Engine };
 use hmac::{ Hmac, Mac, KeyInit };
@@ -37,13 +38,13 @@ pub async fn handle_join(
     mac.update(username.as_bytes());
     let result = mac.finalize().into_bytes();
 
-    // Base64 encode (CORRECT)
+    // Base64 encode
     let credential = STANDARD.encode(result);
     println!(" Generated credentials:");
     println!("  username: {}: {}", name, username);
     println!("  credential: {}", credential);
 
-    // ---------------- CHECK ROOM EXISTS & FETCH NAME ----------------
+    // CHECK ROOM EXISTS & FETCH NAME
     let room_name: String = match
         sqlx
             ::query_scalar("SELECT name FROM rooms WHERE id = $1")
@@ -63,7 +64,7 @@ pub async fn handle_join(
 
     println!("JOIN STARTED: {} -> {}", user_id, room_id);
 
-    // ---------------- START TRANSACTION ----------------
+    // START TRANSACTION
     let mut tx_db = match state.db.begin().await {
         Ok(t) => t,
         Err(_) => {
@@ -74,7 +75,7 @@ pub async fn handle_join(
 
     let rsid = uuid::Uuid::new_v4().to_string();
 
-    // ---------------- ROOM SESSION ----------------
+    // ROOM SESSION
     if
         let Err(_) = sqlx
             ::query(
@@ -92,13 +93,13 @@ pub async fn handle_join(
         return;
     }
 
-    // ---------------- ATTENDANCE ----------------
+    // ATTENDANCE
     if let Err(_) = AttendanceService::mark_join(&state.db, room_id, user_id, name).await {
         let _ = tx.send(error_msg("Failed to record attendance"));
         return;
     }
 
-    // ---------------- PARTICIPANT SESSION ----------------
+    // PARTICIPANT SESSION
     if
         let Err(_) = sqlx
             ::query(
@@ -121,7 +122,7 @@ pub async fn handle_join(
         return;
     }
 
-    // ---------------- PARTICIPANT UPSERT ----------------
+    // PARTICIPANT UPSERT
     if
         let Err(_) = sqlx
             ::query(
@@ -143,7 +144,7 @@ pub async fn handle_join(
         return;
     }
 
-    // ---------------- COMMIT TRANSACTION ----------------
+    // COMMIT TRANSACTION
     if let Err(_) = tx_db.commit().await {
         let _ = tx.send(error_msg("Failed to commit join transaction"));
         return;
@@ -158,6 +159,7 @@ pub async fn handle_join(
         presenter_id: None,
         host_id: None,
         is_open: Some(false),
+        pending_users: HashMap::new(),
     });
 
     // Clean old sessions
@@ -186,7 +188,10 @@ pub async fn handle_join(
 
     room.senders.insert(session_id.clone(), tx.clone());
 
-    // ---------------- EXISTING USERS ----------------
+    // NEW: Check if this user is the host
+    let is_host = room.host_id.as_deref() == Some(user_id);
+
+    // EXISTING USERS
     let existing: Vec<_> = room.participants
         .values()
         .filter(|p| p.id != user_id)
@@ -211,7 +216,7 @@ pub async fn handle_join(
         )
     );
 
-    // ---------------- BROADCAST JOIN ----------------
+    // BROADCAST JOIN
     let join_msg = Message::Text(
         json!({
             "type": "USER_JOINED",
@@ -235,7 +240,61 @@ pub async fn handle_join(
         let _ = sender.send(join_msg.clone());
     }
 
-    // ---------------- LOG + FINAL ACK ----------------
+    // ============ NEW: SEND PENDING JOIN REQUESTS TO HOST ============
+    if is_host {
+        println!("👑 HOST JOINED - Fetching pending join requests...");
+
+        match
+            sqlx
+                ::query(
+                    r#"
+            SELECT id, user_id, name 
+            FROM join_requests 
+            WHERE room_id = $1 AND status = 'pending'
+            ORDER BY created_at ASC
+            "#
+                )
+                .bind(room_id)
+                .fetch_all(&state.db).await
+        {
+            Ok(pending_reqs) => {
+                if pending_reqs.is_empty() {
+                    println!(" No pending join requests");
+                } else {
+                    for req in &pending_reqs {
+                        let req_id: String = req.get("id");
+                        let req_user_id: String = req.get("user_id");
+                        let req_name: String = req.get("name");
+
+                        println!("Sending pending request: {} ({})", req_name, req_id);
+
+                        let _ = tx.send(
+                            Message::Text(
+                                json!({
+                                    "type": "JOIN_REQUEST",
+                                    "request": {
+                                        "id": req_id,
+                                        "user_id": req_user_id,
+                                        "name": req_name
+                                    }
+                                })
+                                    .to_string()
+                                    .into()
+                            )
+                        );
+                    }
+
+                    println!(" Sent {} pending join requests to host", &pending_reqs.len());
+                }
+            }
+            Err(e) => {
+                println!("❌ Failed to fetch pending requests: {:?}", e);
+            }
+        }
+    }
+    // ============ END: PENDING JOIN REQUESTS ============
+
+    // LOG + FINAL ACK
     log_join(state, room_id, user_id, name, &session_id).await;
 
     let _ = tx.send(
@@ -262,5 +321,5 @@ pub async fn handle_join(
         )
     );
 
-    println!("✅ JOIN COMPLETE");
+    println!("JOIN COMPLETE");
 }

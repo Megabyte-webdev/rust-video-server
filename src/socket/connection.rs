@@ -182,10 +182,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         let _ = user_tx.send(
                             Message::Text(
                                 serde_json::json!({
-                        "type": "JOIN_APPROVED",
-                        "request_id": request_id,
-                        "message": "Your join request was approved!"
-                    })
+                "type": "JOIN_APPROVED",
+                "request_id": request_id,
+                "user_id": &r_user_id, 
+                "message": "Your join request was approved!"
+            })
                                     .to_string()
                                     .into()
                             )
@@ -249,10 +250,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         let _ = user_tx.send(
                             Message::Text(
                                 serde_json::json!({
-                        "type": "JOIN_REJECTED",
-                        "request_id": request_id,
-                        "reason": "Your join request was rejected"
-                    })
+                    "type": "JOIN_REJECTED",
+                    "request_id": request_id,
+                    "user_id": &user_id, 
+                    "reason": "Your join request was rejected"
+                })
                                     .to_string()
                                     .into()
                             )

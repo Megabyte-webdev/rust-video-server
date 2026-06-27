@@ -79,7 +79,7 @@ async fn main() {
     let app = Router::new()
         .route("/ws", get(socket_response))
         .route("/rooms", post(create_room))
-        .route("/validate/{id}", get(get_meeting))
+        .route("/meeting/{id}", get(get_meeting))
         .with_state(state)
         .layer(cors);
 

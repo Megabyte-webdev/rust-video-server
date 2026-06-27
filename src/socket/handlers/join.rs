@@ -39,7 +39,7 @@ pub async fn handle_join(
 
     // Base64 encode (CORRECT)
     let credential = STANDARD.encode(result);
-    println!("✅ Generated credentials:");
+    println!(" Generated credentials:");
     println!("  username: {}: {}", name, username);
     println!("  credential: {}", credential);
 

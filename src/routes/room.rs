@@ -18,8 +18,9 @@ pub struct CreateRoomResponse {
 
 #[derive(sqlx::FromRow, Serialize)]
 pub struct RoomData {
-    pub roomId: String,
-    pub hostId: String,
+    pub room_id: String,
+    pub host_id: String,
+    pub name: String,
 }
 
 #[derive(Serialize)]
@@ -92,7 +93,7 @@ pub async fn get_meeting(
     let result = sqlx
         ::query_as::<_, RoomData>(
             r#"
-        SELECT id as room_id, host_id
+        SELECT id as room_id, host_id, name
         FROM rooms
         WHERE id = $1
         "#

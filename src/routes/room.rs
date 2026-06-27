@@ -19,7 +19,7 @@ pub struct CreateRoomResponse {
 #[derive(sqlx::FromRow, Serialize)]
 pub struct RoomData {
     pub room_id: String,
-    pub host_id: String,
+    pub created_by: String,
     pub name: String,
 }
 

@@ -156,6 +156,8 @@ pub async fn handle_join(
         sessions: HashMap::new(),
         senders: HashMap::new(),
         presenter_id: None,
+        host_id: None,
+        is_open: Some(false),
     });
 
     // Clean old sessions

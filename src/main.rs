@@ -10,7 +10,7 @@ mod models;
 mod utils;
 mod services;
 use crate::{
-    routes::room::{ create_room, validate_meeting },
+    routes::room::{ create_room, get_meeting },
     socket::{ handlers::cleanup::cleanup_stale_sessions, ws_handler::socket_response },
     state::AppState,
 };
@@ -79,7 +79,7 @@ async fn main() {
     let app = Router::new()
         .route("/ws", get(socket_response))
         .route("/rooms", post(create_room))
-        .route("/validate/{id}", get(validate_meeting))
+        .route("/validate/{id}", get(get_meeting))
         .with_state(state)
         .layer(cors);
 

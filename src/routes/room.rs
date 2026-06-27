@@ -16,9 +16,10 @@ pub struct CreateRoomResponse {
     pub title: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(sqlx::FromRow, Serialize)]
 pub struct RoomData {
     pub roomId: String,
+    pub hostId: String,
 }
 
 #[derive(Serialize)]
@@ -84,22 +85,28 @@ pub async fn create_room(
     ))
 }
 
-pub async fn validate_meeting(
+pub async fn get_meeting(
     State(state): State<AppState>,
     Path(id): Path<String>
 ) -> (StatusCode, Json<ValidateResponse>) {
     let result = sqlx
-        ::query_scalar::<_, String>("SELECT id FROM rooms WHERE id = $1")
+        ::query_as::<_, RoomData>(
+            r#"
+        SELECT id as room_id, host_id
+        FROM rooms
+        WHERE id = $1
+        "#
+        )
         .bind(&id)
         .fetch_optional(&state.db).await;
 
     match result {
-        Ok(Some(room_id)) =>
+        Ok(Some(room)) =>
             (
                 StatusCode::OK,
                 Json(ValidateResponse {
                     valid: true,
-                    data: Some(RoomData { roomId: room_id }),
+                    data: Some(room),
                 }),
             ),
 
@@ -113,7 +120,7 @@ pub async fn validate_meeting(
             ),
 
         Err(err) => {
-            eprintln!("validate_meeting error: {:?}", err);
+            eprintln!("get_meeting error: {:?}", err);
 
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

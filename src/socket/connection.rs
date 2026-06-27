@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::extract::ws::{ Message, WebSocket };
 use futures_util::{ SinkExt, StreamExt };
 use sqlx::Row;
@@ -151,6 +153,19 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                         }
                     }
+
+                    state.rooms
+                        .write().await
+                        .entry(rid.clone())
+                        .or_insert_with(|| crate::socket::room_manager::Room {
+                            participants: HashMap::new(),
+                            sessions: HashMap::new(),
+                            senders: HashMap::new(),
+                            presenter_id: None,
+                            host_id: None,
+                            is_open: Some(false),
+                            pending_users: HashMap::new(),
+                        });
 
                     state.rooms
                         .write().await

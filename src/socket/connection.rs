@@ -178,6 +178,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
 
                 let req = sqlx
                     ::query(r#"SELECT room_id, user_id, name FROM join_requests WHERE id = $1"#)
+                    .bind(request_id)
                     .fetch_optional(&state.db).await;
 
                 if let Ok(Some(r)) = req {

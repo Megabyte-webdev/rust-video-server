@@ -99,7 +99,8 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         &uid,
                         &name,
                         tx.clone(),
-                        &session_id.clone().unwrap()
+                        &session_id.clone().unwrap(),
+                        host_id.clone()
                     ).await;
                 } else {
                     let request_id = uuid::Uuid::new_v4().to_string();
@@ -112,8 +113,8 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             "#
                         )
                         .bind(&request_id)
-                        .bind(room_id.as_deref().unwrap_or("")) // Pass &str here
-                        .bind(user_id.as_deref().unwrap_or("")) // Pass &str here
+                        .bind(&rid)
+                        .bind(&uid)
                         .bind(&name)
                         .execute(&state.db).await;
 
@@ -129,20 +130,37 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         )
                     );
 
-                    // notify host safely (via room state)
-                    if let Some(rid) = &room_id {
-                        let rooms = state.rooms.read().await;
+                    // Store pending user's tx for later approval/rejection
+                    {
+                        let mut rooms = state.rooms.write().await;
+                        let room_entry = rooms
+                            .entry(rid.clone())
+                            .or_insert_with(|| crate::socket::room_manager::Room {
+                                participants: HashMap::new(),
+                                sessions: HashMap::new(),
+                                senders: HashMap::new(),
+                                presenter_id: None,
+                                host_id: host_id.clone(),
+                                is_open: Some(false),
+                                pending_users: HashMap::new(),
+                            });
 
-                        if let Some(room_state) = rooms.get(rid) {
-                            for sender in room_state.senders.values() {
-                                // Your existing logic
+                        room_entry.pending_users.insert(uid.clone(), tx.clone());
+                        room_entry.host_id = host_id.clone();
+                    }
+
+                    // Notify host if they're already in the room
+                    {
+                        let rooms = state.rooms.read().await;
+                        if let Some(room_state) = rooms.get(&rid) {
+                            for (sid, sender) in room_state.senders.iter() {
                                 let _ = sender.send(
                                     Message::Text(
                                         serde_json::json!({
                         "type": "JOIN_REQUEST",
                         "request": {
                             "id": &request_id,
-                            "user_id": user_id.as_deref().unwrap_or(""),
+                            "user_id": &uid,
                             "name": &name
                         }
                     })
@@ -153,24 +171,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                         }
                     }
-
-                    state.rooms
-                        .write().await
-                        .entry(rid.clone())
-                        .or_insert_with(|| crate::socket::room_manager::Room {
-                            participants: HashMap::new(),
-                            sessions: HashMap::new(),
-                            senders: HashMap::new(),
-                            presenter_id: None,
-                            host_id: None,
-                            is_open: Some(false),
-                            pending_users: HashMap::new(),
-                        });
-
-                    state.rooms
-                        .write().await
-                        .get_mut(&rid)
-                        .map(|room| room.pending_users.insert(uid.clone(), tx.clone()));
                 }
             }
             "JOIN_APPROVE" => {
@@ -186,12 +186,14 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     let r_user_id: String = r.get("user_id");
                     let r_name: String = r.get("name");
 
-                    // Get the APPROVED USER's tx channel
-                    let user_tx = state.rooms
-                        .read().await
-                        .get(&r_room_id)
-                        .and_then(|room| room.pending_users.get(&r_user_id))
-                        .cloned();
+                    // Get the APPROVED USER's tx channel (dropped before write lock)
+                    let user_tx = {
+                        let rooms = state.rooms.read().await;
+                        rooms
+                            .get(&r_room_id)
+                            .and_then(|room| room.pending_users.get(&r_user_id))
+                            .cloned()
+                    };
 
                     if let Some(user_tx) = user_tx {
                         // Send approval message
@@ -214,20 +216,29 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                             .bind(request_id)
                             .execute(&state.db).await;
 
+                        // Get host_id for handle_join
+                        let host_id = {
+                            let rooms = state.rooms.read().await;
+                            rooms.get(&r_room_id).and_then(|r| r.host_id.clone())
+                        };
+
                         handle_join(
                             &state,
                             &r_room_id,
                             &r_user_id,
                             &r_name,
                             user_tx,
-                            &uuid::Uuid::new_v4().to_string()
+                            &uuid::Uuid::new_v4().to_string(),
+                            host_id
                         ).await;
 
-                        // Clean up pending user
-                        state.rooms
-                            .write().await
-                            .get_mut(&r_room_id)
-                            .map(|room| room.pending_users.remove(&r_user_id));
+                        // Clean up pending user (after dropping read lock)
+                        {
+                            let mut rooms = state.rooms.write().await;
+                            if let Some(room) = rooms.get_mut(&r_room_id) {
+                                room.pending_users.remove(&r_user_id);
+                            }
+                        }
                     }
                 }
             }
@@ -245,11 +256,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                             r#"{"type":"JOIN_REJECT_FAILED","reason":"request_not_found"}"#.into()
                         )
                     );
-                    return;
+                    continue;
                 };
 
-                let room_id: String = req.get("room_id");
-                let user_id: String = req.get("user_id");
+                let room_id_reject: String = req.get("room_id");
+                let user_id_reject: String = req.get("user_id");
 
                 // mark rejected in DB
                 let _ = sqlx
@@ -257,31 +268,37 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     .bind(request_id)
                     .execute(&state.db).await;
 
-                //  Notify target user
-                let rooms = state.rooms.read().await;
+                // Get user's tx and send rejection (DROP read lock before write)
+                let user_tx = {
+                    let rooms = state.rooms.read().await;
+                    rooms
+                        .get(&room_id_reject)
+                        .and_then(|room| room.pending_users.get(&user_id_reject))
+                        .cloned()
+                };
 
-                if let Some(room) = rooms.get(&room_id) {
-                    //  FIX 1: Check pending_users first (where pending users actually are)
-                    if let Some(user_tx) = room.pending_users.get(&user_id) {
-                        let _ = user_tx.send(
-                            Message::Text(
-                                serde_json::json!({
+                if let Some(user_tx) = user_tx {
+                    let _ = user_tx.send(
+                        Message::Text(
+                            serde_json::json!({
                     "type": "JOIN_REJECTED",
                     "request_id": request_id,
-                    "user_id": &user_id, 
+                    "user_id": &user_id_reject, 
                     "reason": "Your join request was rejected"
                 })
-                                    .to_string()
-                                    .into()
-                            )
-                        );
-                    }
+                                .to_string()
+                                .into()
+                        )
+                    );
                 }
 
-                state.rooms
-                    .write().await
-                    .get_mut(&room_id)
-                    .map(|room| room.pending_users.remove(&user_id));
+                // NOW safe to acquire write lock
+                {
+                    let mut rooms = state.rooms.write().await;
+                    if let Some(room) = rooms.get_mut(&room_id_reject) {
+                        room.pending_users.remove(&user_id_reject);
+                    }
+                }
             }
 
             "PING" => {

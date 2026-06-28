@@ -21,7 +21,8 @@ pub async fn handle_join(
     user_id: &str,
     name: &str,
     tx: UnboundedSender<Message>,
-    incoming_session_id: &str
+    incoming_session_id: &str,
+    host_id: Option<String>
 ) {
     let auth_secret = std::env::var("TURN_AUTH_SECRET").unwrap_or_else(|_| "".to_string());
     let turn_server = std::env
@@ -157,10 +158,13 @@ pub async fn handle_join(
         sessions: HashMap::new(),
         senders: HashMap::new(),
         presenter_id: None,
-        host_id: None,
+        host_id: host_id.clone(),
         is_open: Some(false),
         pending_users: HashMap::new(),
     });
+
+    // Ensure host_id is always set from the source of truth
+    room.host_id = host_id.clone();
 
     // Clean old sessions
     let old_sessions: Vec<String> = room.sessions
@@ -188,8 +192,8 @@ pub async fn handle_join(
 
     room.senders.insert(session_id.clone(), tx.clone());
 
-    // NEW: Check if this user is the host
-    let is_host = room.host_id.as_deref() == Some(user_id);
+    // Check if this user is the host
+    let is_host = host_id.as_deref() == Some(user_id);
 
     // EXISTING USERS
     let existing: Vec<_> = room.participants
@@ -240,7 +244,7 @@ pub async fn handle_join(
         let _ = sender.send(join_msg.clone());
     }
 
-    // ============ NEW: SEND PENDING JOIN REQUESTS TO HOST ============
+    // SEND PENDING JOIN REQUESTS TO HOST
     if is_host {
         println!("👑 HOST JOINED - Fetching pending join requests...");
 
@@ -292,7 +296,6 @@ pub async fn handle_join(
             }
         }
     }
-    // ============ END: PENDING JOIN REQUESTS ============
 
     // LOG + FINAL ACK
     log_join(state, room_id, user_id, name, &session_id).await;

@@ -2,7 +2,11 @@ use axum::{ extract::{ Path, State }, http::StatusCode, Json };
 
 use serde::{ Deserialize, Serialize };
 
-use crate::{ state::AppState, utils::helper::generate_room_id };
+use crate::{
+    socket::handlers::room_close::handle_room_close,
+    state::AppState,
+    utils::helper::generate_room_id,
+};
 
 #[derive(Deserialize)]
 pub struct CreateRoomRequest {
@@ -132,4 +136,14 @@ pub async fn get_meeting(
             )
         }
     }
+}
+
+pub async fn delete_room(state: AppState, Path(room_id): Path<String>) -> Result<String, String> {
+    // Delete room from DB
+    let _ = sqlx::query("DELETE FROM rooms WHERE id = $1").bind(&room_id).execute(&state.db).await;
+
+    // Cleanup pending requests & memory
+    handle_room_close(&state, &room_id).await; // ← HERE
+
+    Ok("Room deleted".to_string())
 }

@@ -244,17 +244,20 @@ pub async fn handle_join(
         let _ = sender.send(join_msg.clone());
     }
 
-    // SEND PENDING JOIN REQUESTS TO HOST
+    // SEND PENDING JOIN REQUESTS TO HOST (ONLY IF RECENT)
     if is_host {
-        println!("👑 HOST JOINED - Fetching pending join requests...");
+        println!("👑 HOST JOINED - Fetching recent pending join requests...");
 
+        // Only get requests created in last 30 minutes
         match
             sqlx
                 ::query(
                     r#"
             SELECT id, user_id, name 
             FROM join_requests 
-            WHERE room_id = $1 AND status = 'pending'
+            WHERE room_id = $1 
+            AND status = 'pending'
+            AND created_at > datetime('now', '-30 minutes')
             ORDER BY created_at ASC
             "#
                 )
@@ -263,8 +266,9 @@ pub async fn handle_join(
         {
             Ok(pending_reqs) => {
                 if pending_reqs.is_empty() {
-                    println!(" No pending join requests");
+                    println!(" No recent pending join requests");
                 } else {
+                    println!(" Found {} recent pending requests", pending_reqs.len());
                     for req in &pending_reqs {
                         let req_id: String = req.get("id");
                         let req_user_id: String = req.get("user_id");
@@ -272,24 +276,42 @@ pub async fn handle_join(
 
                         println!("Sending pending request: {} ({})", req_name, req_id);
 
-                        let _ = tx.send(
-                            Message::Text(
-                                json!({
-                                    "type": "JOIN_REQUEST",
-                                    "request": {
-                                        "id": req_id,
-                                        "user_id": req_user_id,
-                                        "name": req_name
-                                    }
-                                })
-                                    .to_string()
-                                    .into()
-                            )
+                        // Send to host
+                        let pending_msg = Message::Text(
+                            json!({
+                                "type": "JOIN_REQUEST",
+                                "request": {
+                                    "id": req_id,
+                                    "user_id": req_user_id,
+                                    "name": req_name
+                                }
+                            })
+                                .to_string()
+                                .into()
                         );
+
+                        if let Err(e) = tx.send(pending_msg) {
+                            println!("❌ Failed to send pending request to host: {:?}", e);
+                        } else {
+                            println!("✅ Sent pending request to host");
+                        }
                     }
 
-                    println!(" Sent {} pending join requests to host", &pending_reqs.len());
+                    println!(" Sent {} recent pending join requests to host", &pending_reqs.len());
                 }
+
+                // Clean up very old expired requests (older than 30 mins)
+                let _ = sqlx
+                    ::query(
+                        r#"
+                DELETE FROM join_requests 
+                WHERE room_id = $1 
+                AND status = 'pending'
+                AND created_at < datetime('now', '-30 minutes')
+                "#
+                    )
+                    .bind(room_id)
+                    .execute(&state.db).await;
             }
             Err(e) => {
                 println!("❌ Failed to fetch pending requests: {:?}", e);

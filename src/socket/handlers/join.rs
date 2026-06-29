@@ -41,7 +41,7 @@ pub async fn handle_join(
 
     // Base64 encode
     let credential = STANDARD.encode(result);
-    println!(" Generated credentials:");
+    println!("Generated credentials:");
     println!("  username: {}: {}", name, username);
     println!("  credential: {}", credential);
 
@@ -160,7 +160,8 @@ pub async fn handle_join(
         presenter_id: None,
         host_id: host_id.clone(),
         is_open: Some(false),
-        pending_users: HashMap::new(),
+        pending_requests: HashMap::new(),
+        approved_users: std::collections::HashSet::new(),
     });
 
     // Ensure host_id is always set from the source of truth
@@ -244,78 +245,42 @@ pub async fn handle_join(
         let _ = sender.send(join_msg.clone());
     }
 
-    // SEND PENDING JOIN REQUESTS TO HOST (ONLY IF RECENT)
+    // SEND PENDING JOIN REQUESTS TO HOST (FROM MEMORY ONLY)
     if is_host {
-        println!("👑 HOST JOINED - Fetching recent pending join requests...");
+        println!("👑 HOST JOINED - Sending pending join requests from memory...");
 
-        // Only get requests created in last 30 minutes
-        match
-            sqlx
-                ::query(
-                    r#"
-            SELECT id, user_id, name 
-            FROM join_requests 
-            WHERE room_id = $1 
-            AND status = 'pending'
-            AND created_at > datetime('now', '-30 minutes')
-            ORDER BY created_at ASC
-            "#
-                )
-                .bind(room_id)
-                .fetch_all(&state.db).await
-        {
-            Ok(pending_reqs) => {
-                if pending_reqs.is_empty() {
-                    println!(" No recent pending join requests");
-                } else {
-                    println!(" Found {} recent pending requests", pending_reqs.len());
-                    for req in &pending_reqs {
-                        let req_id: String = req.get("id");
-                        let req_user_id: String = req.get("user_id");
-                        let req_name: String = req.get("name");
+        // Collect pending requests from memory
+        let pending_reqs: Vec<_> = room.pending_requests.values().cloned().collect();
 
-                        println!("Sending pending request: {} ({})", req_name, req_id);
+        if pending_reqs.is_empty() {
+            println!("No pending join requests in waiting room");
+        } else {
+            println!("Found {} pending requests in memory", pending_reqs.len());
 
-                        // Send to host
-                        let pending_msg = Message::Text(
-                            json!({
-                                "type": "JOIN_REQUEST",
-                                "request": {
-                                    "id": req_id,
-                                    "user_id": req_user_id,
-                                    "name": req_name
-                                }
-                            })
-                                .to_string()
-                                .into()
-                        );
+            for req in &pending_reqs {
+                println!("Sending pending request: {} ({})", req.name, req.id);
 
-                        if let Err(e) = tx.send(pending_msg) {
-                            println!("❌ Failed to send pending request to host: {:?}", e);
-                        } else {
-                            println!("✅ Sent pending request to host");
+                let pending_msg = Message::Text(
+                    json!({
+                        "type": "JOIN_REQUEST",
+                        "request": {
+                            "id": &req.id,
+                            "user_id": &req.user_id,
+                            "name": &req.name
                         }
-                    }
+                    })
+                        .to_string()
+                        .into()
+                );
 
-                    println!(" Sent {} recent pending join requests to host", &pending_reqs.len());
+                if let Err(e) = tx.send(pending_msg) {
+                    println!("❌ Failed to send pending request to host: {:?}", e);
+                } else {
+                    println!("Sent pending request to host");
                 }
+            }
 
-                // Clean up very old expired requests (older than 30 mins)
-                let _ = sqlx
-                    ::query(
-                        r#"
-                DELETE FROM join_requests 
-                WHERE room_id = $1 
-                AND status = 'pending'
-                AND created_at < datetime('now', '-30 minutes')
-                "#
-                    )
-                    .bind(room_id)
-                    .execute(&state.db).await;
-            }
-            Err(e) => {
-                println!("❌ Failed to fetch pending requests: {:?}", e);
-            }
+            println!("Sent {} pending join requests to host", pending_reqs.len());
         }
     }
 

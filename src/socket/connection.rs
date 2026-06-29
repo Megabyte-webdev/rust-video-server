@@ -24,7 +24,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if sender.send(msg).await.is_err() {
-                println!("❌ WS SEND FAILED (client likely disconnected)");
+                println!("WS SEND FAILED (client likely disconnected)");
                 break;
             }
         }
@@ -72,8 +72,8 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     .fetch_optional(&state.db).await;
 
                 match &room {
-                    Ok(Some(_)) => println!(" ROOM FOUND in DB"),
-                    Ok(None) => println!("❌ ROOM NOT FOUND in DB"),
+                    Ok(Some(_)) => println!("ROOM FOUND in DB"),
+                    Ok(None) => println!("ROOM NOT FOUND in DB"),
                     Err(e) => println!("💥 SQL ERROR: {:?}", e),
                 }
 
@@ -85,14 +85,38 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let is_open: bool = room.get("is_open");
                 let host_id: Option<String> = room.get("created_by");
 
-                println!("📦 ROOM DATA: is_open={:?}, created_by={:?}", is_open, host_id);
+                println!("ROOM DATA: is_open={:?}, created_by={:?}", is_open, host_id);
 
                 let is_host = host_id.as_deref() == Some(&uid);
 
                 println!("👤 is_host = {}", is_host);
 
-                if is_open || is_host {
-                    println!("🚪 ALLOWING JOIN");
+                // Check if user is approved to join
+                let is_approved = {
+                    let rooms = state.rooms.read().await;
+                    rooms
+                        .get(&rid)
+                        .map(|r| r.approved_users.contains(&uid))
+                        .unwrap_or(false)
+                };
+
+                if is_open || is_host || is_approved {
+                    println!(
+                        "ALLOWING JOIN (open={}, host={}, approved={})",
+                        is_open,
+                        is_host,
+                        is_approved
+                    );
+
+                    // Consume the approval
+                    if is_approved {
+                        let mut rooms = state.rooms.write().await;
+                        if let Some(room) = rooms.get_mut(&rid) {
+                            room.approved_users.remove(&uid);
+                            println!("Consumed approval for user {}", uid);
+                        }
+                    }
+
                     handle_join(
                         &state,
                         &rid,
@@ -105,39 +129,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 } else {
                     let request_id = uuid::Uuid::new_v4().to_string();
 
-                    println!("🔒 ROOM CLOSED - Creating join request: {}", request_id);
+                    println!("ROOM CLOSED - Creating join request: {}", request_id);
 
-                    let _ = sqlx
-                        ::query(
-                            r#"
-            INSERT INTO join_requests (id, room_id, user_id, name, status, created_at)
-            VALUES ($1, $2, $3, $4, 'pending', NOW())
-            "#
-                        )
-                        .bind(&request_id)
-                        .bind(&rid)
-                        .bind(&uid)
-                        .bind(&name)
-                        .execute(&state.db).await;
-
-                    println!("✅ Join request stored in DB: {}", request_id);
-
-                    // notify user they're pending
-                    let pending_msg =
-                        serde_json::json!({
-                        "type": "JOIN_PENDING",
-                        "request_id": &request_id
-                    })
-                            .to_string()
-                            .into();
-
-                    if let Err(e) = tx.send(Message::Text(pending_msg)) {
-                        println!("❌ Failed to send JOIN_PENDING to user: {:?}", e);
-                    } else {
-                        println!("✅ Sent JOIN_PENDING to user {}", uid);
-                    }
-
-                    // Store pending user's tx for later approval/rejection
+                    // Store in memory only - simplified with tx in JoinRequest
                     {
                         let mut rooms = state.rooms.write().await;
                         let room_entry = rooms
@@ -149,12 +143,43 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                 presenter_id: None,
                                 host_id: host_id.clone(),
                                 is_open: Some(false),
-                                pending_users: HashMap::new(),
+                                pending_requests: HashMap::new(),
+                                approved_users: std::collections::HashSet::new(),
                             });
 
-                        room_entry.pending_users.insert(uid.clone(), tx.clone());
+                        // Add to pending requests with tx included
+                        room_entry.pending_requests.insert(
+                            request_id.clone(),
+                            crate::socket::room_manager::JoinRequest {
+                                id: request_id.clone(),
+                                user_id: uid.clone(),
+                                name: name.clone(),
+                                tx: tx.clone(),
+                            }
+                        );
+
                         room_entry.host_id = host_id.clone();
-                        println!("✅ Stored pending user {} in room state", uid);
+
+                        println!(
+                            "Stored pending request {} for user {} in room state",
+                            request_id,
+                            uid
+                        );
+                    }
+
+                    // Notify user they're pending
+                    let pending_msg =
+                        serde_json::json!({
+                        "type": "JOIN_PENDING",
+                        "request_id": &request_id
+                    })
+                            .to_string()
+                            .into();
+
+                    if let Err(e) = tx.send(Message::Text(pending_msg)) {
+                        println!("Failed to send JOIN_PENDING to user: {:?}", e);
+                    } else {
+                        println!("Sent JOIN_PENDING to user {}", uid);
                     }
 
                     // Notify host if they're already in the room
@@ -180,13 +205,13 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                 );
 
                                 if let Err(e) = sender.send(req_msg) {
-                                    println!("❌ Failed to notify host: {:?}", e);
+                                    println!("Failed to notify host: {:?}", e);
                                 } else {
-                                    println!("✅ Notified host about pending request");
+                                    println!("Notified host about pending request");
                                 }
                             }
                         } else {
-                            println!("⏳ Host not in room yet, will send when they join");
+                            println!("Host not in room yet, will send when they join");
                         }
                     }
                 }
@@ -196,179 +221,164 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
 
                 println!("🎯 JOIN_APPROVE received for request: {}", request_id);
 
-                let req = sqlx
-                    ::query(r#"SELECT room_id, user_id, name FROM join_requests WHERE id = $1"#)
-                    .bind(request_id)
-                    .fetch_optional(&state.db).await;
+                // Get request from memory
+                let (r_room_id, r_user_id, r_name, user_tx) = {
+                    let mut rooms = state.rooms.write().await;
 
-                if let Ok(Some(r)) = req {
-                    let r_room_id: String = r.get("room_id");
-                    let r_user_id: String = r.get("user_id");
-                    let r_name: String = r.get("name");
+                    // Find the request
+                    let mut found = None;
+                    let mut room_id_found = None;
 
-                    println!(
-                        "📋 Found request - approving user {} to join room {}",
-                        r_user_id,
-                        r_room_id
-                    );
-
-                    // Get the APPROVED USER's tx channel (dropped before write lock)
-                    let user_tx = {
-                        let rooms = state.rooms.read().await;
-                        rooms
-                            .get(&r_room_id)
-                            .and_then(|room| room.pending_users.get(&r_user_id))
-                            .cloned()
-                    };
-
-                    if let Some(user_tx) = user_tx {
-                        // Send approval message
-                        let approval_msg = Message::Text(
-                            serde_json::json!({
-                "type": "JOIN_APPROVED",
-                "request_id": request_id,
-                "user_id": &r_user_id, 
-                "message": "Your join request was approved!"
-            })
-                                .to_string()
-                                .into()
-                        );
-
-                        match user_tx.send(approval_msg) {
-                            Ok(_) => println!("✅ Sent JOIN_APPROVED to user {}", r_user_id),
-                            Err(e) =>
-                                println!(
-                                    "❌ Failed to send approval to user {}: {:?}",
-                                    r_user_id,
-                                    e
-                                ),
+                    for (rid, room) in rooms.iter_mut() {
+                        if let Some(req) = room.pending_requests.get(request_id) {
+                            found = Some((req.user_id.clone(), req.name.clone(), req.tx.clone()));
+                            room_id_found = Some(rid.clone());
+                            break;
                         }
+                    }
 
-                        // Update DB
-                        let update_res = sqlx
-                            ::query(r#"UPDATE join_requests SET status = 'approved' WHERE id = $1"#)
-                            .bind(request_id)
-                            .execute(&state.db).await;
-
-                        match update_res {
-                            Ok(_) => println!("✅ Updated request status in DB"),
-                            Err(e) => println!("❌ Failed to update request in DB: {:?}", e),
-                        }
-
-                        // Get host_id for handle_join
-                        let host_id = {
-                            let rooms = state.rooms.read().await;
-                            rooms.get(&r_room_id).and_then(|r| r.host_id.clone())
-                        };
-
-                        println!("🔌 Calling handle_join for approved user");
-
-                        handle_join(
-                            &state,
-                            &r_room_id,
-                            &r_user_id,
-                            &r_name,
-                            user_tx,
-                            &uuid::Uuid::new_v4().to_string(),
-                            host_id
-                        ).await;
-
-                        // Clean up pending user (after dropping read lock)
-                        {
-                            let mut rooms = state.rooms.write().await;
-                            if let Some(room) = rooms.get_mut(&r_room_id) {
-                                room.pending_users.remove(&r_user_id);
-                                println!("✅ Removed user {} from pending_users", r_user_id);
-                            }
+                    if
+                        let (Some((req_user_id, req_name, req_tx)), Some(found_room_id)) = (
+                            found,
+                            room_id_found,
+                        )
+                    {
+                        // Remove from pending requests
+                        if let Some(room) = rooms.get_mut(&found_room_id) {
+                            room.pending_requests.remove(request_id);
+                            (found_room_id, req_user_id, req_name, Some(req_tx))
+                        } else {
+                            println!("Room {} disappeared", found_room_id);
+                            let _ = tx.send(
+                                Message::Text(
+                                    r#"{"type":"APPROVE_FAILED","reason":"room_not_found"}"#.into()
+                                )
+                            );
+                            continue;
                         }
                     } else {
-                        println!("❌ User {} not in pending_users! (disconnected?)", r_user_id);
+                        println!("Request {} not found in memory", request_id);
+                        let _ = tx.send(
+                            Message::Text(
+                                r#"{"type":"APPROVE_FAILED","reason":"request_not_found"}"#.into()
+                            )
+                        );
+                        continue;
+                    }
+                };
+
+                println!("Found request - approving user {} to join room {}", r_user_id, r_room_id);
+
+                if let Some(user_tx) = user_tx {
+                    // Send approval message
+                    let approval_msg = Message::Text(
+                        serde_json::json!({
+                "type": "JOIN_APPROVED",
+                "request_id": request_id,
+                "user_id": &r_user_id,
+                "message": "Your join request was approved! Please reconnect to join the room."
+            })
+                            .to_string()
+                            .into()
+                    );
+
+                    match user_tx.send(approval_msg) {
+                        Ok(_) => println!("Sent JOIN_APPROVED to user {}", r_user_id),
+                        Err(e) =>
+                            println!("Failed to send approval to user {}: {:?}", r_user_id, e),
+                    }
+
+                    // Mark user as approved for their reconnection
+                    {
+                        let mut rooms = state.rooms.write().await;
+                        if let Some(room) = rooms.get_mut(&r_room_id) {
+                            room.approved_users.insert(r_user_id.clone());
+                            println!("Marked user {} as approved, waiting for reconnect", r_user_id);
+                        }
                     }
                 } else {
-                    println!("❌ Request {} not found in DB", request_id);
+                    println!("Failed to get user tx!");
                 }
             }
             "JOIN_REJECT" => {
                 let request_id = value["request_id"].as_str().unwrap_or("");
 
-                println!("❌ JOIN_REJECT received for request: {}", request_id);
+                println!("JOIN_REJECT received for request: {}", request_id);
 
-                let req = sqlx
-                    ::query(r#"SELECT room_id, user_id FROM join_requests WHERE id = $1"#)
-                    .bind(request_id)
-                    .fetch_optional(&state.db).await;
+                // Get request from memory
+                let (room_id_reject, user_id_reject, user_tx) = {
+                    let mut rooms = state.rooms.write().await;
 
-                let Ok(Some(req)) = req else {
-                    println!("❌ Request {} not found in DB", request_id);
-                    let _ = tx.send(
-                        Message::Text(
-                            r#"{"type":"JOIN_REJECT_FAILED","reason":"request_not_found"}"#.into()
+                    let mut found = None;
+                    let mut room_id_found = None;
+
+                    for (rid, room) in rooms.iter_mut() {
+                        if let Some(req) = room.pending_requests.get(request_id) {
+                            found = Some((req.user_id.clone(), req.tx.clone()));
+                            room_id_found = Some(rid.clone());
+                            break;
+                        }
+                    }
+
+                    if
+                        let (Some((req_user_id, req_tx)), Some(found_room_id)) = (
+                            found,
+                            room_id_found,
                         )
-                    );
-                    continue;
+                    {
+                        if let Some(room) = rooms.get_mut(&found_room_id) {
+                            // Remove from pending requests
+                            room.pending_requests.remove(request_id);
+                            (found_room_id, req_user_id, Some(req_tx))
+                        } else {
+                            println!("Room disappeared");
+                            let _ = tx.send(
+                                Message::Text(
+                                    r#"{"type":"REJECT_FAILED","reason":"room_disappeared"}"#.into()
+                                )
+                            );
+                            continue;
+                        }
+                    } else {
+                        println!("Request {} not found in memory", request_id);
+                        let _ = tx.send(
+                            Message::Text(
+                                r#"{"type":"REJECT_FAILED","reason":"request_not_found"}"#.into()
+                            )
+                        );
+                        continue;
+                    }
                 };
 
-                let room_id_reject: String = req.get("room_id");
-                let user_id_reject: String = req.get("user_id");
-
                 println!(
-                    "📋 Found request - rejecting user {} from room {}",
+                    "Found request - rejecting user {} from room {}",
                     user_id_reject,
                     room_id_reject
                 );
-
-                // mark rejected in DB
-                let update_res = sqlx
-                    ::query(r#"UPDATE join_requests SET status = 'rejected' WHERE id = $1"#)
-                    .bind(request_id)
-                    .execute(&state.db).await;
-
-                match update_res {
-                    Ok(_) => println!("✅ Updated request status to rejected in DB"),
-                    Err(e) => println!("❌ Failed to update request in DB: {:?}", e),
-                }
-
-                // Get user's tx and send rejection (DROP read lock before write)
-                let user_tx = {
-                    let rooms = state.rooms.read().await;
-                    rooms
-                        .get(&room_id_reject)
-                        .and_then(|room| room.pending_users.get(&user_id_reject))
-                        .cloned()
-                };
 
                 if let Some(user_tx) = user_tx {
                     let rejection_msg = Message::Text(
                         serde_json::json!({
                     "type": "JOIN_REJECTED",
                     "request_id": request_id,
-                    "user_id": &user_id_reject, 
-                    "reason": "Your join request was rejected"
+                    "user_id": &user_id_reject,
+                    "reason": "Your join request was rejected by the host"
                 })
                             .to_string()
                             .into()
                     );
 
                     match user_tx.send(rejection_msg) {
-                        Ok(_) => println!("✅ Sent JOIN_REJECTED to user {}", user_id_reject),
+                        Ok(_) => println!("Sent JOIN_REJECTED to user {}", user_id_reject),
                         Err(e) =>
                             println!(
-                                "❌ Failed to send rejection to user {}: {:?}",
+                                "Failed to send rejection to user {}: {:?}",
                                 user_id_reject,
                                 e
                             ),
                     }
                 } else {
-                    println!("❌ User {} not in pending_users! (disconnected?)", user_id_reject);
-                }
-
-                // NOW safe to acquire write lock
-                {
-                    let mut rooms = state.rooms.write().await;
-                    if let Some(room) = rooms.get_mut(&room_id_reject) {
-                        room.pending_users.remove(&user_id_reject);
-                        println!("✅ Removed user {} from pending_users", user_id_reject);
-                    }
+                    println!("Failed to get user tx!");
                 }
             }
 
@@ -404,6 +414,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     handle_screen_share(&state, rid, uid, false, None).await;
                 }
             }
+
             "MEDIA_STATE" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     let kind = value
@@ -418,40 +429,46 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     handle_media_state(&state, rid, uid, kind, enabled).await;
                 }
             }
+
             "CHAT_MESSAGE" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     handle_message(&state, rid, uid, &name, value).await;
                 }
             }
+
             "OFFER" | "ANSWER" | "ICE" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     handle_signaling(&state, rid, uid, &txt).await;
                 }
             }
+
             _ => (),
         }
     }
 
-    println!("SOCKET CLOSED - Cleaning up user");
+    println!("🔌 SOCKET CLOSED - Cleaning up user");
 
     if let Some(rid) = &room_id {
         if let Some(uid) = &user_id {
-            // Clean up pending join request if this user had one
-            println!("🗑️ Cleaning up join request for user {}", uid);
-            let _ = sqlx
-                ::query(
-                    r#"DELETE FROM join_requests WHERE user_id = $1 AND room_id = $2 AND status = 'pending'"#
-                )
-                .bind(uid)
-                .bind(rid)
-                .execute(&state.db).await;
-
-            // Remove from pending_users in memory
+            // Remove from pending requests in memory
             {
                 let mut rooms = state.rooms.write().await;
                 if let Some(room) = rooms.get_mut(rid) {
-                    if room.pending_users.remove(uid).is_some() {
-                        println!("✅ Removed pending user {} from room state", uid);
+                    // Remove from pending_requests
+                    let to_remove: Vec<_> = room.pending_requests
+                        .iter()
+                        .filter(|(_, req)| req.user_id == *uid)
+                        .map(|(id, _)| id.clone())
+                        .collect();
+
+                    for req_id in to_remove {
+                        room.pending_requests.remove(&req_id);
+                        println!("Removed pending request {} from memory", req_id);
+                    }
+
+                    // Remove from approved_users
+                    if room.approved_users.remove(uid) {
+                        println!("Removed user {} from approved_users", uid);
                     }
                 }
             }
@@ -465,7 +482,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             session_id.clone(),
         )
     {
-        println!("CLEANING UP USER SESSION");
+        println!("🧹 CLEANING UP USER SESSION");
 
         handle_leave(&state, &rid, &uid, name.clone(), &sid).await;
 

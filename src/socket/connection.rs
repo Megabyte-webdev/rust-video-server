@@ -182,33 +182,45 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         println!("Sent JOIN_PENDING to user {}", uid);
                     }
 
-                    // Notify host if they're already in the room
+                    // Notify ONLY host if they're already in the room
                     {
                         let rooms = state.rooms.read().await;
                         if let Some(room_state) = rooms.get(&rid) {
-                            println!(
-                                "📢 Notifying {} senders about new join request",
-                                room_state.senders.len()
-                            );
-                            for sender in room_state.senders.values() {
-                                let req_msg = Message::Text(
-                                    serde_json::json!({
-                        "type": "JOIN_REQUEST",
-                        "request": {
-                            "id": &request_id,
-                            "user_id": &uid,
-                            "name": &name
-                        }
-                    })
-                                        .to_string()
-                                        .into()
+                            if let Some(host_id_val) = &room_state.host_id {
+                                // Find all senders belonging to the host only
+                                let host_senders: Vec<_> = room_state.sessions
+                                    .iter()
+                                    .filter(|(_, owner_uid)| *owner_uid == host_id_val)
+                                    .filter_map(|(sid, _)| room_state.senders.get(sid).cloned())
+                                    .collect();
+
+                                println!(
+                                    "📢 Notifying {} host senders about new join request",
+                                    host_senders.len()
                                 );
 
-                                if let Err(e) = sender.send(req_msg) {
-                                    println!("Failed to notify host: {:?}", e);
-                                } else {
-                                    println!("Notified host about pending request");
+                                for sender in host_senders {
+                                    let req_msg = Message::Text(
+                                        serde_json::json!({
+                            "type": "JOIN_REQUEST",
+                            "request": {
+                                "id": &request_id,
+                                "user_id": &uid,
+                                "name": &name
+                            }
+                        })
+                                            .to_string()
+                                            .into()
+                                    );
+
+                                    if let Err(e) = sender.send(req_msg) {
+                                        println!("Failed to notify host: {:?}", e);
+                                    } else {
+                                        println!("Notified host about pending request");
+                                    }
                                 }
+                            } else {
+                                println!("Host not in room yet, will send when they join");
                             }
                         } else {
                             println!("Host not in room yet, will send when they join");
@@ -220,6 +232,59 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let request_id = value["request_id"].as_str().unwrap_or("");
 
                 println!("🎯 JOIN_APPROVE received for request: {}", request_id);
+
+                // ============ VERIFY REQUESTER IS HOST ============
+                {
+                    let rooms = state.rooms.read().await;
+
+                    // Find which room contains this request
+                    let request_room = rooms
+                        .iter()
+                        .find(|(_, r)| r.pending_requests.contains_key(request_id));
+
+                    match request_room {
+                        Some((_, room_data)) => {
+                            let is_requester_host =
+                                room_data.host_id.as_deref() == user_id.as_deref();
+
+                            if !is_requester_host {
+                                println!(
+                                    "UNAUTHORIZED: User {} attempted to approve but is not host (host: {:?})",
+                                    user_id.as_deref().unwrap_or("unknown"),
+                                    room_data.host_id
+                                );
+                                let _ = tx.send(
+                                    Message::Text(
+                                        serde_json::json!({
+                                            "type": "APPROVE_FAILED",
+                                            "reason": "unauthorized",
+                                            "message": "Only the host can approve join requests"
+                                        })
+                                            .to_string()
+                                            .into()
+                                    )
+                                );
+                                continue;
+                            }
+                        }
+                        None => {
+                            println!("Request {} not found in memory", request_id);
+                            let _ = tx.send(
+                                Message::Text(
+                                    serde_json::json!({
+                                        "type": "APPROVE_FAILED",
+                                        "reason": "request_not_found",
+                                        "message": "Join request not found"
+                                    })
+                                        .to_string()
+                                        .into()
+                                )
+                            );
+                            continue;
+                        }
+                    }
+                }
+                // ============ END: HOST VERIFICATION ============
 
                 // Get request from memory
                 let (r_room_id, r_user_id, r_name, user_tx) = {
@@ -267,7 +332,12 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     }
                 };
 
-                println!("Found request - approving user {} to join room {}", r_user_id, r_room_id);
+                println!(
+                    "Host {} approved user {} to join room {}",
+                    user_id.as_deref().unwrap_or("unknown"),
+                    r_user_id,
+                    r_room_id
+                );
 
                 if let Some(user_tx) = user_tx {
                     // Send approval message
@@ -304,6 +374,59 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let request_id = value["request_id"].as_str().unwrap_or("");
 
                 println!("JOIN_REJECT received for request: {}", request_id);
+
+                // ============ VERIFY REQUESTER IS HOST ============
+                {
+                    let rooms = state.rooms.read().await;
+
+                    // Find which room contains this request
+                    let request_room = rooms
+                        .iter()
+                        .find(|(_, r)| r.pending_requests.contains_key(request_id));
+
+                    match request_room {
+                        Some((_, room_data)) => {
+                            let is_requester_host =
+                                room_data.host_id.as_deref() == user_id.as_deref();
+
+                            if !is_requester_host {
+                                println!(
+                                    "UNAUTHORIZED: User {} attempted to reject but is not host (host: {:?})",
+                                    user_id.as_deref().unwrap_or("unknown"),
+                                    room_data.host_id
+                                );
+                                let _ = tx.send(
+                                    Message::Text(
+                                        serde_json::json!({
+                                            "type": "REJECT_FAILED",
+                                            "reason": "unauthorized",
+                                            "message": "Only the host can reject join requests"
+                                        })
+                                            .to_string()
+                                            .into()
+                                    )
+                                );
+                                continue;
+                            }
+                        }
+                        None => {
+                            println!("Request {} not found in memory", request_id);
+                            let _ = tx.send(
+                                Message::Text(
+                                    serde_json::json!({
+                                        "type": "REJECT_FAILED",
+                                        "reason": "request_not_found",
+                                        "message": "Join request not found"
+                                    })
+                                        .to_string()
+                                        .into()
+                                )
+                            );
+                            continue;
+                        }
+                    }
+                }
+                // ============ END: HOST VERIFICATION ============
 
                 // Get request from memory
                 let (room_id_reject, user_id_reject, user_tx) = {
@@ -351,7 +474,8 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 };
 
                 println!(
-                    "Found request - rejecting user {} from room {}",
+                    "Host {} rejected user {} from room {}",
+                    user_id.as_deref().unwrap_or("unknown"),
                     user_id_reject,
                     room_id_reject
                 );
@@ -482,10 +606,36 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             session_id.clone(),
         )
     {
-        println!("🧹 CLEANING UP USER SESSION");
+        // Verify user actually joined the room (not just in pending_requests)
+        {
+            let rooms = state.rooms.read().await;
+            if let Some(room) = rooms.get(&rid) {
+                let user_in_room = room.sessions.values().any(|u| u == &uid);
+                let user_pending = room.pending_requests.values().any(|req| req.user_id == uid);
 
-        handle_leave(&state, &rid, &uid, name.clone(), &sid).await;
+                if user_in_room {
+                    // User joined the room, clean them up properly
+                    println!("🧹 CLEANING UP USER SESSION");
+                    handle_leave(&state, &rid, &uid, name.clone(), &sid).await;
+                    println!("CLEANUP COMPLETE");
+                } else if user_pending {
+                    // User was only pending, just remove from pending_requests
+                    println!("🧹 CLEANING UP PENDING REQUEST (user never joined)");
+                    let mut rooms_mut = state.rooms.write().await;
+                    if let Some(room_mut) = rooms_mut.get_mut(&rid) {
+                        let to_remove: Vec<_> = room_mut.pending_requests
+                            .iter()
+                            .filter(|(_, req)| req.user_id == uid)
+                            .map(|(id, _)| id.clone())
+                            .collect();
 
-        println!("CLEANUP COMPLETE");
+                        for req_id in to_remove {
+                            room_mut.pending_requests.remove(&req_id);
+                            println!("Removed pending request {} - user disconnected while waiting", req_id);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

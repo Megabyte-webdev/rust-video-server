@@ -115,15 +115,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         is_approved
                     );
 
-                    // Consume the approval
-                    if is_approved {
-                        let mut rooms = state.rooms.write().await;
-                        if let Some(room) = rooms.get_mut(&rid) {
-                            room.approved_users.remove(&uid);
-                            println!("Consumed approval for user {}", uid);
-                        }
-                    }
-
                     handle_join(
                         &state,
                         &rid,

@@ -92,13 +92,16 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 println!("👤 is_host = {}", is_host);
 
                 // Check if user is approved to join
-                let is_approved = {
+                let is_approved = if is_host {
+                    false
+                } else {
                     let rooms = state.rooms.read().await;
                     rooms
                         .get(&rid)
                         .map(|r| r.approved_users.contains(&uid))
                         .unwrap_or(false)
                 };
+                println!("DEBUG: is_approved = {}", is_approved);
 
                 if is_open || is_host || is_approved {
                     println!(

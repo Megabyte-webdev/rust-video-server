@@ -24,28 +24,22 @@ pub async fn handle_join(
     incoming_session_id: &str,
     host_id: Option<String>
 ) {
-    let auth_secret = std::env::var("TURN_AUTH_SECRET").unwrap_or_else(|_| "".to_string());
-    let turn_server = std::env
-        ::var("TURN_SERVER")
-        .map_err(|_| "TURN SERVER must be set")
-        .expect("Failed to fetch TURN SERVER");
+    println!("👤 JOIN STARTED: {} ({}) -> room {}", user_id, name, room_id);
 
+    // ============ GENERATE TURN CREDENTIALS ============
     let expiration = Utc::now().timestamp() + 24 * 3600;
     let username = format!("{}:{}", expiration, user_id);
 
     let mut mac = Hmac::<Sha1>
-        ::new_from_slice(auth_secret.as_bytes())
+        ::new_from_slice(state.turn_config.auth_secret.as_bytes())
         .expect("HMAC can take key of any size");
     mac.update(username.as_bytes());
     let result = mac.finalize().into_bytes();
 
-    // Base64 encode
     let credential = STANDARD.encode(result);
-    println!("Generated credentials:");
-    println!("  username: {}: {}", name, username);
-    println!("  credential: {}", credential);
+    println!("🔐 Generated TURN credentials for user {}", name);
 
-    // CHECK ROOM EXISTS & FETCH NAME
+    // ============ CHECK ROOM EXISTS & FETCH NAME ============
     let room_name: String = match
         sqlx
             ::query_scalar("SELECT name FROM rooms WHERE id = $1")
@@ -54,21 +48,22 @@ pub async fn handle_join(
     {
         Ok(Some(name)) => name,
         Ok(None) => {
+            eprintln!("Room {} does not exist", room_id);
             let _ = tx.send(error_msg("Room does not exist"));
             return;
         }
-        Err(_) => {
+        Err(e) => {
+            eprintln!("Database error while checking room: {:?}", e);
             let _ = tx.send(error_msg("Database error while joining room"));
             return;
         }
     };
 
-    println!("JOIN STARTED: {} -> {}", user_id, room_id);
-
-    // START TRANSACTION
+    // ============ START TRANSACTION ============
     let mut tx_db = match state.db.begin().await {
         Ok(t) => t,
-        Err(_) => {
+        Err(e) => {
+            eprintln!("Failed to start database transaction: {:?}", e);
             let _ = tx.send(error_msg("Failed to start database transaction"));
             return;
         }
@@ -76,9 +71,9 @@ pub async fn handle_join(
 
     let rsid = uuid::Uuid::new_v4().to_string();
 
-    // ROOM SESSION
+    // ============ INSERT ROOM SESSION ============
     if
-        let Err(_) = sqlx
+        let Err(e) = sqlx
             ::query(
                 r#"
         INSERT INTO room_sessions (id, room_id, started_at)
@@ -90,19 +85,23 @@ pub async fn handle_join(
             .bind(room_id)
             .execute(&mut *tx_db).await
     {
+        eprintln!("Failed to create room session: {:?}", e);
         let _ = tx.send(error_msg("Failed to create room session"));
+        let _ = tx_db.rollback().await;
         return;
     }
 
-    // ATTENDANCE
-    if let Err(_) = AttendanceService::mark_join(&state.db, room_id, user_id, name).await {
+    // ============ RECORD ATTENDANCE ============
+    if let Err(e) = AttendanceService::mark_join(&state.db, room_id, user_id, name).await {
+        eprintln!("Failed to record attendance: {:?}", e);
         let _ = tx.send(error_msg("Failed to record attendance"));
+        let _ = tx_db.rollback().await;
         return;
     }
 
-    // PARTICIPANT SESSION
+    // ============ INSERT PARTICIPANT SESSION ============
     if
-        let Err(_) = sqlx
+        let Err(e) = sqlx
             ::query(
                 r#"
         INSERT INTO participant_sessions
@@ -119,13 +118,15 @@ pub async fn handle_join(
             .bind(&rsid)
             .execute(&mut *tx_db).await
     {
+        eprintln!("Failed to create participant session: {:?}", e);
         let _ = tx.send(error_msg("Failed to create participant session"));
+        let _ = tx_db.rollback().await;
         return;
     }
 
-    // PARTICIPANT UPSERT
+    // ============ UPSERT PARTICIPANT ============
     if
-        let Err(_) = sqlx
+        let Err(e) = sqlx
             ::query(
                 r#"
         INSERT INTO participants (id, room_id, name, first_joined_at, last_seen)
@@ -141,16 +142,30 @@ pub async fn handle_join(
             .bind(name)
             .execute(&mut *tx_db).await
     {
+        eprintln!("Failed to register participant: {:?}", e);
         let _ = tx.send(error_msg("Failed to register participant"));
+        let _ = tx_db.rollback().await;
         return;
     }
 
-    // COMMIT TRANSACTION
-    if let Err(_) = tx_db.commit().await {
+    // ============ LOG JOIN EVENT - INSIDE TRANSACTION ============
+    if let Err(e) = log_join(&mut tx_db, room_id, user_id, incoming_session_id, name).await {
+        eprintln!("Failed to log join event: {:?}", e);
+        let _ = tx.send(error_msg("Failed to log join event"));
+        let _ = tx_db.rollback().await;
+        return;
+    }
+
+    // ============ COMMIT TRANSACTION ============
+    if let Err(e) = tx_db.commit().await {
+        eprintln!("Failed to commit join transaction: {:?}", e);
         let _ = tx.send(error_msg("Failed to commit join transaction"));
         return;
     }
 
+    println!("Database transaction committed for user {}", user_id);
+
+    // ============ UPDATE MEMORY STATE ============
     let mut rooms = state.rooms.write().await;
 
     let room = rooms.entry(room_id.to_string()).or_insert(Room {
@@ -164,10 +179,10 @@ pub async fn handle_join(
         approved_users: std::collections::HashSet::new(),
     });
 
-    // Ensure host_id is always set from the source of truth
+    // Ensure host_id is set from authoritative source
     room.host_id = host_id.clone();
 
-    // Clean old sessions
+    // Clean up old sessions for this user (handle reconnects)
     let old_sessions: Vec<String> = room.sessions
         .iter()
         .filter(|(_, uid)| *uid == user_id)
@@ -177,11 +192,11 @@ pub async fn handle_join(
     for sid in old_sessions {
         room.sessions.remove(&sid);
         room.senders.remove(&sid);
+        println!("Cleaned up old session {} for user {}", sid, user_id);
     }
 
     // Register new session
     let session_id = incoming_session_id.to_string();
-
     room.sessions.insert(session_id.clone(), user_id.to_string());
 
     room.participants.insert(user_id.to_string(), ParticipantState {
@@ -193,10 +208,7 @@ pub async fn handle_join(
 
     room.senders.insert(session_id.clone(), tx.clone());
 
-    // Check if this user is the host
-    let is_host = host_id.as_deref() == Some(user_id);
-
-    // EXISTING USERS
+    // ============ SEND EXISTING USERS TO NEW USER ============
     let existing: Vec<_> = room.participants
         .values()
         .filter(|p| p.id != user_id)
@@ -209,57 +221,70 @@ pub async fn handle_join(
         })
         .collect();
 
-    let _ = tx.send(
-        Message::Text(
-            json!({
+    if
+        let Err(e) = tx.send(
+            Message::Text(
+                json!({
             "type": "EXISTING_USERS",
             "participants": existing,
             "presenterId": room.presenter_id
         })
-                .to_string()
-                .into()
+                    .to_string()
+                    .into()
+            )
         )
-    );
+    {
+        eprintln!("Failed to send existing users list: {:?}", e);
+    }
 
-    // BROADCAST JOIN
+    // ============ BROADCAST JOIN TO OTHERS ============
     let join_msg = Message::Text(
         json!({
             "type": "USER_JOINED",
             "participant": {
                 "id": user_id,
                 "name": name,
-                "session_id": session_id
+                "session_id": &session_id
             }
         })
             .to_string()
             .into()
     );
 
+    let mut broadcast_count = 0;
     for (sid, sender) in room.senders.iter() {
+        // Skip sending to the joining user's own session
         if let Some(owner) = room.sessions.get(sid) {
             if owner == user_id {
                 continue;
             }
+        } else {
+            // Invariant violation - log but continue
+            eprintln!("WARNING: Sender {} has no corresponding session owner", sid);
+            continue;
         }
 
-        let _ = sender.send(join_msg.clone());
+        if let Err(e) = sender.send(join_msg.clone()) {
+            eprintln!("Failed to broadcast USER_JOINED to session {}: {:?}", sid, e);
+        } else {
+            broadcast_count += 1;
+        }
     }
+    println!("Broadcasted join to {} other participants", broadcast_count);
 
-    // SEND PENDING JOIN REQUESTS TO HOST (FROM MEMORY ONLY)
+    // ============ SEND PENDING REQUESTS TO HOST ============
+    let is_host = host_id.as_deref() == Some(user_id);
     if is_host {
-        println!("👑 HOST JOINED - Sending pending join requests from memory...");
+        println!("HOST JOINED - Sending pending join requests");
 
-        // Collect pending requests from memory
         let pending_reqs: Vec<_> = room.pending_requests.values().cloned().collect();
 
         if pending_reqs.is_empty() {
-            println!("No pending join requests in waiting room");
+            println!("No pending join requests");
         } else {
-            println!("Found {} pending requests in memory", pending_reqs.len());
+            println!("Found {} pending requests", pending_reqs.len());
 
             for req in &pending_reqs {
-                println!("Sending pending request: {} ({})", req.name, req.id);
-
                 let pending_msg = Message::Text(
                     json!({
                         "type": "JOIN_REQUEST",
@@ -274,42 +299,37 @@ pub async fn handle_join(
                 );
 
                 if let Err(e) = tx.send(pending_msg) {
-                    println!("❌ Failed to send pending request to host: {:?}", e);
+                    eprintln!("Failed to send pending request to host: {:?}", e);
                 } else {
-                    println!("Sent pending request to host");
+                    println!("Sent pending request: {} ({})", req.name, req.id);
                 }
             }
-
-            println!("Sent {} pending join requests to host", pending_reqs.len());
         }
     }
 
-    // LOG + FINAL ACK
-    log_join(state, room_id, user_id, name, &session_id).await;
+    // ============ SEND JOIN CONFIRMATION WITH ICE SERVERS ============
+    let joined_msg =
+        json!({
+        "type": "JOINED",
+        "room_id": room_id,
+        "room_name": room_name,
+        "user_id": user_id,
+        "session_id": &session_id,
+        "iceServers": [
+            {
+                "urls": [format!("stun:{}:3478", state.turn_config.server)]
+            },
+            {
+                "urls": [format!("turn:{}:3478", state.turn_config.server)],
+                "username": username,
+                "credential": credential
+            }
+        ]
+    });
 
-    let _ = tx.send(
-        Message::Text(
-            json!({
-            "type": "JOINED",
-            "room_id": room_id,
-            "room_name": room_name,
-            "user_id": user_id,
-            "session_id": session_id,
-             "iceServers": [
-                    {
-                        "urls": [format!("stun:{}:3478", turn_server)]
-                    },
-                    {
-                        "urls": [format!("turn:{}:3478", turn_server)],
-                        "username": username,
-                        "credential": credential
-                    }
-                ]
-        })
-                .to_string()
-                .into()
-        )
-    );
+    if let Err(e) = tx.send(Message::Text(joined_msg.to_string().into())) {
+        eprintln!("Failed to send JOINED confirmation: {:?}", e);
+    }
 
-    println!("JOIN COMPLETE");
+    println!("JOIN COMPLETE for user {} in room {}", user_id, room_id);
 }

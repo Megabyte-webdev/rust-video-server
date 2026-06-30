@@ -1,7 +1,11 @@
 use axum::extract::ws::Message;
 use serde_json::json;
 
-use crate::{ services::attendance_service::AttendanceService, state::AppState };
+use crate::{
+    services::attendance_service::AttendanceService,
+    socket::events::log_leave,
+    state::AppState,
+};
 
 pub async fn handle_leave(
     state: &AppState,
@@ -39,7 +43,6 @@ pub async fn handle_leave(
                 room.participants.remove(user_id);
             }
 
-            // ============ CLEANUP PENDING JOIN REQUEST & APPROVED USER ============
             // Remove from pending requests (in case they were in waiting room)
             let to_remove: Vec<_> = room.pending_requests
                 .iter()
@@ -71,59 +74,120 @@ pub async fn handle_leave(
     // ---------------- DB TRANSACTION ----------------
     let mut tx_db = match state.db.begin().await {
         Ok(t) => t,
-        Err(_) => {
-            println!("Failed to start DB transaction");
+        Err(e) => {
+            eprintln!("Failed to start database transaction: {:?}", e);
+            let _ = tx.send(error_msg("Failed to start database transaction"));
             return;
         }
     };
 
-    let _ = sqlx
-        ::query(
-            r#"
-        INSERT INTO room_events
-        (room_id, session_id, user_id, event_type, payload)
-        VALUES ($1, $2, $3, 'LEAVE', $4)
+    if let Err(e) = log_leave(&mut tx_db, room_id, user_id, session_id, &name).await {
+        eprintln!("Failed to log leave event: {:?}", e);
+        let _ = tx_db.rollback().await;
+        return;
+    }
+
+    if
+        let Err(e) = sqlx
+            ::query(
+                r#"
+        UPDATE room_sessions
+        SET ended_at = NOW()
+        WHERE id = $1
         "#
-        )
-        .bind(room_id)
-        .bind(session_id)
-        .bind(user_id)
-        .bind(json!({ "name": name }))
-        .execute(&mut *tx_db).await;
+            )
+            .bind(session_id)
+            .execute(&mut *tx_db).await
+    {
+        eprintln!("Failed to update room_sessions: {:?}", e);
+        let _ = tx_db.rollback().await;
+        return;
+    }
 
-    let _ = sqlx
-        ::query("UPDATE room_sessions SET ended_at = NOW() WHERE id = $1")
-        .bind(session_id)
-        .execute(&mut *tx_db).await;
-
-    let _ = sqlx
-        ::query(
-            r#"
+    if
+        let Err(e) = sqlx
+            ::query(
+                r#"
         UPDATE participant_sessions
         SET left_at = NOW(), last_seen = NOW()
         WHERE id = $1
         "#
-        )
-        .bind(session_id)
-        .execute(&mut *tx_db).await;
-
-    if let Err(_) = AttendanceService::mark_leave(&state.db, room_id, user_id).await {
-        println!("Failed to mark attendance");
+            )
+            .bind(session_id)
+            .execute(&mut *tx_db).await
+    {
+        eprintln!("Failed participant_sessions update: {:?}", e);
+        let _ = tx_db.rollback().await;
         return;
     }
 
-    let _ = tx_db.commit().await;
+    if let Err(e) = AttendanceService::mark_leave(&state.db, room_id, user_id).await {
+        eprintln!("Failed attendance update: {:?}", e);
+        let _ = tx_db.rollback().await;
+        return;
+    }
+    if let Err(e) = tx_db.commit().await {
+        eprintln!("Transaction commit failed: {:?}", e);
+        return;
+    }
+
+    {
+        let mut rooms = state.rooms.write().await;
+
+        if let Some(room) = rooms.get_mut(room_id) {
+            recipients = room.senders
+                .iter()
+                .filter_map(|(sid, tx)| {
+                    let owner = room.sessions.get(sid)?;
+                    if sid == session_id || owner == user_id {
+                        return None;
+                    }
+                    Some(tx.clone())
+                })
+                .collect();
+
+            room.sessions.remove(session_id);
+            room.senders.remove(session_id);
+
+            let still_connected = room.sessions.values().any(|uid| uid == user_id);
+            if !still_connected {
+                room.participants.remove(user_id);
+            }
+
+            // cleanup pending
+            let to_remove: Vec<_> = room.pending_requests
+                .iter()
+                .filter(|(_, req)| req.user_id == user_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            for id in to_remove {
+                room.pending_requests.remove(&id);
+            }
+
+            // cleanup approved
+            room.approved_users.remove(user_id);
+
+            if room.sessions.is_empty() {
+                println!("📭 Room {} empty, removing", room_id);
+                rooms.remove(room_id);
+            }
+        } else {
+            println!("Room {} not found in memory", room_id);
+            return;
+        }
+    }
 
     // BROADCAST LEAVE
     let leave_msg = Message::Text(
         json!({
-        "type": "USER_LEFT",
-        "participant": {
-            "id": user_id,
-            "name": name,
-            "session_id": session_id
-        }
-    })
+            "type": "USER_LEFT",
+            "participant": {
+                "id": user_id,
+                "name": name,
+                "session_id": session_id
+            }
+        })
             .to_string()
             .into()
     );

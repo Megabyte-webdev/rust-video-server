@@ -1,16 +1,14 @@
 use serde_json::json;
-
-use crate::state::AppState;
+use sqlx::PgTransaction;
 
 pub async fn log_join(
-    state: &AppState,
+    tx: &mut PgTransaction<'_>,
     room_id: &str,
     user_id: &str,
-    name: &str,
-    session_id: &str
-) {
-    // DB event
-    let _ = sqlx
+    session_id: &str,
+    name: &str
+) -> Result<(), sqlx::Error> {
+    sqlx
         ::query(
             r#"
         INSERT INTO room_events
@@ -22,17 +20,19 @@ pub async fn log_join(
         .bind(session_id)
         .bind(user_id)
         .bind(json!({ "name": name }))
-        .execute(&state.db).await;
+        .execute(&mut **tx).await?;
+
+    Ok(())
 }
 
 pub async fn log_leave(
-    state: &AppState,
+    tx: &mut PgTransaction<'_>,
     room_id: &str,
     user_id: &str,
-    name: String,
-    session_id: &str
-) {
-    let _ = sqlx
+    session_id: &str,
+    name: &str
+) -> Result<(), sqlx::Error> {
+    sqlx
         ::query(
             r#"
         INSERT INTO room_events
@@ -44,5 +44,7 @@ pub async fn log_leave(
         .bind(session_id)
         .bind(user_id)
         .bind(json!({ "name": name }))
-        .execute(&state.db).await;
+        .execute(&mut **tx).await?;
+
+    Ok(())
 }

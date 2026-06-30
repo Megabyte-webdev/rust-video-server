@@ -1,7 +1,10 @@
-use axum::{ Router, http::HeaderValue, routing::{ get, post } };
+use axum::Router;
+use axum::http::HeaderValue;
+use axum::routing::{ get, post };
 use dotenvy::dotenv;
 use tower_http::cors::{ CorsLayer, Any };
 use sqlx::postgres::PgPoolOptions;
+
 mod routes;
 mod socket;
 mod state;
@@ -9,17 +12,19 @@ mod auth;
 mod models;
 mod utils;
 mod services;
+
 use crate::{
     routes::room::{ create_room, get_meeting },
-    socket::{ handlers::cleanup::cleanup_stale_sessions, ws_handler::socket_response },
-    state::AppState,
+    socket::handlers::cleanup::cleanup_stale_sessions,
+    socket::ws_handler::socket_response,
+    state::{ AppState, TurnConfig },
 };
-
-//use redis::Commands;
 
 #[tokio::main]
 async fn main() {
     dotenv().ok();
+
+    // ============ LOAD DATABASE ============
     let db_url = std::env
         ::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must be set")
@@ -32,50 +37,45 @@ async fn main() {
 
     println!("Postgres connected");
 
+    // ============ LOAD TURN CONFIGURATION AT STARTUP ============
+    let turn_config = TurnConfig::from_env().expect(
+        "Failed to load TURN configuration. Please set TURN_SERVER and TURN_AUTH_SECRET environment variables."
+    );
+
+    println!("TURN Server configured: {}", turn_config.server);
+
+    // ============ KEEP-ALIVE PING ============
     if let Ok(url) = std::env::var("APP_URL") {
         tokio::spawn(start_keep_alive(url));
     }
 
-    // let redis_url = "redis://127.0.0.1/";
-    // let redis_client = redis::Client::open(redis_url).expect("Failed to connect to Redis");
-
-    // Test connection
-    //let mut conn = redis_client.get_connection().expect("Redis connection failed");
-    //let pong: String = conn.ping().expect("Redis ping failed");
-    // println!("Redis PING response: {}", pong);
-
-    // println!(" Redis connected");
-
+    // ============ INITIALIZE ROOMS STATE ============
     let rooms = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
+    // ============ CREATE APP STATE ============
     let state = AppState {
         rooms,
         db: db_pool,
-        //redis: redis_client,
+        turn_config,
     };
 
-    // let cors = CorsLayer::new()
-    //     .allow_origin(Any) // allow all origins for testing
-    //     .allow_methods(Any)
-    //     .allow_headers(Any);
-
+    // ============ CORS CONFIGURATION ============
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
-    // .allow_credentials(true);
 
+    // ============ OPTIONAL: CLEANUP STALE SESSIONS ============
+    // Uncomment to enable periodic cleanup
     // tokio::spawn({
     //     let state = state.clone();
-
     //     async move {
     //         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-
     //         loop {
     //             interval.tick().await;
-
     //             cleanup_stale_sessions(&state).await;
     //         }
     //     }
     // });
 
+    // ============ BUILD ROUTER ============
     let app = Router::new()
         .route("/ws", get(socket_response))
         .route("/rooms", post(create_room))
@@ -83,17 +83,20 @@ async fn main() {
         .with_state(state)
         .layer(cors);
 
+    // ============ START SERVER ============
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-
     let addr_str = format!("0.0.0.0:{}", port);
 
     let listener = tokio::net::TcpListener
         ::bind(&addr_str).await
         .expect(&format!("Failed to bind to {}", addr_str));
-    println!("🚀 WebSocket server running on ws://{:?}", listener);
-    axum::serve(listener, app).await.unwrap();
+
+    println!("🚀 WebSocket server running on ws://{}", addr_str);
+
+    axum::serve(listener, app).await.expect("Server error");
 }
 
+/// Periodically ping the application to prevent it from sleeping on free-tier hosting
 async fn start_keep_alive(url: String) {
     let client = reqwest::Client::new();
     // Ping every 10 minutes (Render sleeps after 15)

@@ -25,7 +25,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
     let (tx, mut rx) = unbounded_channel::<Message>();
     let client = ClientSender::new(tx);
 
-    tokio::spawn(async move {
+    let write_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if sender.send(msg).await.is_err() {
                 println!("WS SEND FAILED (client likely disconnected)");
@@ -572,6 +572,18 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             }
 
+            "LEAVE" => {
+                // Manual leave call
+                if let (Some(rid), Some(uid), Some(session_id)) = (&room_id, &user_id, &session_id) {
+                    println!("👤 Manual Leave requested for user {}", uid);
+                    handle_leave(&state, rid, uid, name.clone(), &session_id).await;
+                    // Clear tracking variables so cleanup at bottom won't double execute
+                    room_id = None;
+                    user_id = None;
+                }
+                break; // Break the socket loop
+            }
+
             _ => (),
         }
     }
@@ -605,43 +617,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     }
 
-    if
-        let (Some(rid), Some(uid), Some(sid)) = (
-            room_id.clone(),
-            user_id.clone(),
-            session_id.clone(),
-        )
-    {
-        // Verify user actually joined the room (not just in pending_requests)
-        {
-            let rooms = state.rooms.read().await;
-            if let Some(room) = rooms.get(&rid) {
-                let user_in_room = room.sessions.values().any(|u| u == &uid);
-                let user_pending = room.pending_requests.values().any(|req| req.user_id == uid);
-
-                if user_in_room {
-                    // User joined the room, clean them up properly
-                    println!("🧹 CLEANING UP USER SESSION");
-                    handle_leave(&state, &rid, &uid, name.clone(), &sid).await;
-                    println!("CLEANUP COMPLETE");
-                } else if user_pending {
-                    // User was only pending, just remove from pending_requests
-                    println!("🧹 CLEANING UP PENDING REQUEST (user never joined)");
-                    let mut rooms_mut = state.rooms.write().await;
-                    if let Some(room_mut) = rooms_mut.get_mut(&rid) {
-                        let to_remove: Vec<_> = room_mut.pending_requests
-                            .iter()
-                            .filter(|(_, req)| req.user_id == uid)
-                            .map(|(id, _)| id.clone())
-                            .collect();
-
-                        for req_id in to_remove {
-                            room_mut.pending_requests.remove(&req_id);
-                            println!("Removed pending request {} - user disconnected while waiting", req_id);
-                        }
-                    }
-                }
-            }
-        }
+    if let (Some(rid), Some(uid), Some(sid)) = (room_id, user_id, session_id) {
+        println!("🔌 SOCKET DISCONNECTED - Cleaning up user {} from room {}", uid, rid);
+        handle_leave(&state, &rid, &uid, name.clone(), &sid).await;
     }
+    write_task.abort();
 }

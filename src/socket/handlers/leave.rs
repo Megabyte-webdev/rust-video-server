@@ -38,35 +38,30 @@ pub async fn handle_leave(
             room.senders.remove(session_id);
 
             let still_connected = room.sessions.values().any(|uid| uid == user_id);
-
             if !still_connected {
                 room.participants.remove(user_id);
             }
 
-            // Remove from pending requests (in case they were in waiting room)
+            // cleanup pending
             let to_remove: Vec<_> = room.pending_requests
                 .iter()
                 .filter(|(_, req)| req.user_id == user_id)
                 .map(|(id, _)| id.clone())
                 .collect();
 
-            for req_id in to_remove {
-                room.pending_requests.remove(&req_id);
-                println!("Removed pending request {} from memory", req_id);
+            for id in to_remove {
+                room.pending_requests.remove(&id);
             }
 
-            // Remove from approved users if present
-            if room.approved_users.remove(user_id) {
-                println!("Removed user {} from approved_users", user_id);
-            }
-            // ============ END: CLEANUP ============
+            // cleanup approved
+            room.approved_users.remove(user_id);
 
             if room.sessions.is_empty() {
-                println!("📭 Room {} is now empty, removing from state", room_id);
+                println!("📭 Room {} empty, removing", room_id);
                 rooms.remove(room_id);
             }
         } else {
-            println!("Room {} not found in state", room_id);
+            println!("Room {} not found in memory", room_id);
             return;
         }
     }
@@ -127,53 +122,6 @@ pub async fn handle_leave(
     if let Err(e) = tx_db.commit().await {
         eprintln!("Transaction commit failed: {:?}", e);
         return;
-    }
-
-    {
-        let mut rooms = state.rooms.write().await;
-
-        if let Some(room) = rooms.get_mut(room_id) {
-            recipients = room.senders
-                .iter()
-                .filter_map(|(sid, tx)| {
-                    let owner = room.sessions.get(sid)?;
-                    if sid == session_id || owner == user_id {
-                        return None;
-                    }
-                    Some(tx.clone())
-                })
-                .collect();
-
-            room.sessions.remove(session_id);
-            room.senders.remove(session_id);
-
-            let still_connected = room.sessions.values().any(|uid| uid == user_id);
-            if !still_connected {
-                room.participants.remove(user_id);
-            }
-
-            // cleanup pending
-            let to_remove: Vec<_> = room.pending_requests
-                .iter()
-                .filter(|(_, req)| req.user_id == user_id)
-                .map(|(id, _)| id.clone())
-                .collect();
-
-            for id in to_remove {
-                room.pending_requests.remove(&id);
-            }
-
-            // cleanup approved
-            room.approved_users.remove(user_id);
-
-            if room.sessions.is_empty() {
-                println!("📭 Room {} empty, removing", room_id);
-                rooms.remove(room_id);
-            }
-        } else {
-            println!("Room {} not found in memory", room_id);
-            return;
-        }
     }
 
     // BROADCAST LEAVE

@@ -7,10 +7,9 @@ pub async fn handle_media_state(
     state: &AppState,
     room_id: &str,
     user_id: &str,
-    kind: &str, // "audio" or "video"
-    enabled: bool // true = unmuted/on, false = muted/off
+    kind: &str,
+    enabled: bool
 ) {
-    // Prevent broadcasting empty or unvalidated variants
     if kind != "audio" && kind != "video" {
         return;
     }
@@ -18,8 +17,12 @@ pub async fn handle_media_state(
     let rooms = state.rooms.read().await;
 
     let Some(room) = rooms.get(room_id) else {
+        println!("MEDIA_STATE: Room {} not found", room_id);
         return;
     };
+
+    println!("MEDIA_STATE: Broadcasting to {} senders", room.senders.len());
+    println!("   Senders in map: {:?}", room.senders.keys().collect::<Vec<_>>());
 
     let outbound = Message::Text(
         json!({
@@ -33,7 +36,10 @@ pub async fn handle_media_state(
             .into()
     );
 
-    for sender in room.senders.values() {
-        let _ = sender.send(outbound.clone());
+    for (session_id, sender) in room.senders.iter() {
+        match sender.send(outbound.clone()) {
+            Ok(_) => println!("Sent MEDIA_STATE to session {}", session_id),
+            Err(e) => println!("Failed to send to {}: {:?}", session_id, e),
+        }
     }
 }

@@ -196,8 +196,11 @@ pub async fn handle_join(
 
     // Register new session
     let session_id = incoming_session_id.to_string();
+
+    // overwrite session mapping
     room.sessions.insert(session_id.clone(), user_id.to_string());
 
+    // ALWAYS ensure participant exists (idempotent upsert)
     room.participants.insert(user_id.to_string(), ParticipantState {
         id: user_id.to_string(),
         name: name.to_string(),

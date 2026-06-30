@@ -74,13 +74,11 @@ pub async fn handle_leave(
     // ---------------- DB TRANSACTION ----------------
     let mut tx_db = match state.db.begin().await {
         Ok(t) => t,
-        Err(e) => {
-            eprintln!("Failed to start database transaction: {:?}", e);
-            let _ = tx.send(error_msg("Failed to start database transaction"));
+        Err(_) => {
+            println!("Failed to start DB transaction");
             return;
         }
     };
-
     if let Err(e) = log_leave(&mut tx_db, room_id, user_id, session_id, &name).await {
         eprintln!("Failed to log leave event: {:?}", e);
         let _ = tx_db.rollback().await;

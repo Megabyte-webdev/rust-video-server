@@ -6,13 +6,16 @@ use sqlx::Row;
 use tokio::sync::mpsc::unbounded_channel;
 
 use crate::{
-    socket::handlers::{
-        join::handle_join,
-        leave::handle_leave,
-        media_state::handle_media_state,
-        message::handle_message,
-        screen_share::handle_screen_share,
-        signaling::handle_signaling,
+    socket::{
+        handlers::{
+            join::handle_join,
+            leave::handle_leave,
+            media_state::handle_media_state,
+            message::handle_message,
+            screen_share::handle_screen_share,
+            signaling::handle_signaling,
+        },
+        room_manager::ClientSender,
     },
     state::AppState,
 };
@@ -20,6 +23,7 @@ use crate::{
 pub async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = unbounded_channel::<Message>();
+    let client = ClientSender::new(tx);
 
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -78,7 +82,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
 
                 let Ok(Some(room)) = room else {
-                    let _ = tx.send(Message::Text(r#"{"type":"ROOM_NOT_FOUND"}"#.into()));
+                    let _ = client.send(Message::Text(r#"{"type":"ROOM_NOT_FOUND"}"#.into()));
                     return;
                 };
 
@@ -125,8 +129,8 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         &rid,
                         &uid,
                         &name,
-                        tx.clone(),
-                        &session_id.clone().unwrap(),
+                        client.clone(),
+                        session_id.as_ref().unwrap(),
                         host_id.clone()
                     ).await;
                 } else {
@@ -157,7 +161,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                 id: request_id.clone(),
                                 user_id: uid.clone(),
                                 name: name.clone(),
-                                tx: tx.clone(),
+                                tx: client.clone(),
                             }
                         );
 
@@ -179,7 +183,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                             .to_string()
                             .into();
 
-                    if let Err(e) = tx.send(Message::Text(pending_msg)) {
+                    if let Err(e) = client.send(Message::Text(pending_msg)) {
                         println!("Failed to send JOIN_PENDING to user: {:?}", e);
                     } else {
                         println!("Sent JOIN_PENDING to user {}", uid);
@@ -194,7 +198,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                 let host_senders: Vec<_> = room_state.sessions
                                     .iter()
                                     .filter(|(_, owner_uid)| *owner_uid == host_id_val)
-                                    .filter_map(|(sid, _)| room_state.senders.get(sid).cloned())
+                                    .filter_map(|(sid, _)| room_state.senders.get(sid).clone())
                                     .collect();
 
                                 println!(
@@ -256,7 +260,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                     user_id.as_deref().unwrap_or("unknown"),
                                     room_data.host_id
                                 );
-                                let _ = tx.send(
+                                let _ = client.send(
                                     Message::Text(
                                         serde_json::json!({
                                             "type": "APPROVE_FAILED",
@@ -272,7 +276,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                         None => {
                             println!("Request {} not found in memory", request_id);
-                            let _ = tx.send(
+                            let _ = client.send(
                                 Message::Text(
                                     serde_json::json!({
                                         "type": "APPROVE_FAILED",
@@ -287,10 +291,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                 }
-                // ============ END: HOST VERIFICATION ============
 
                 // Get request from memory
-                let (r_room_id, r_user_id, r_name, user_tx) = {
+                let (r_room_id, r_user_id, _, user_tx) = {
                     let mut rooms = state.rooms.write().await;
 
                     // Find the request
@@ -317,7 +320,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                             (found_room_id, req_user_id, req_name, Some(req_tx))
                         } else {
                             println!("Room {} disappeared", found_room_id);
-                            let _ = tx.send(
+                            let _ = client.send(
                                 Message::Text(
                                     r#"{"type":"APPROVE_FAILED","reason":"room_not_found"}"#.into()
                                 )
@@ -326,7 +329,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     } else {
                         println!("Request {} not found in memory", request_id);
-                        let _ = tx.send(
+                        let _ = client.send(
                             Message::Text(
                                 r#"{"type":"APPROVE_FAILED","reason":"request_not_found"}"#.into()
                             )
@@ -398,7 +401,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                     user_id.as_deref().unwrap_or("unknown"),
                                     room_data.host_id
                                 );
-                                let _ = tx.send(
+                                let _ = client.send(
                                     Message::Text(
                                         serde_json::json!({
                                             "type": "REJECT_FAILED",
@@ -414,7 +417,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                         None => {
                             println!("Request {} not found in memory", request_id);
-                            let _ = tx.send(
+                            let _ = client.send(
                                 Message::Text(
                                     serde_json::json!({
                                         "type": "REJECT_FAILED",
@@ -458,7 +461,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                             (found_room_id, req_user_id, Some(req_tx))
                         } else {
                             println!("Room disappeared");
-                            let _ = tx.send(
+                            let _ = client.send(
                                 Message::Text(
                                     r#"{"type":"REJECT_FAILED","reason":"room_disappeared"}"#.into()
                                 )
@@ -467,7 +470,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     } else {
                         println!("Request {} not found in memory", request_id);
-                        let _ = tx.send(
+                        let _ = client.send(
                             Message::Text(
                                 r#"{"type":"REJECT_FAILED","reason":"request_not_found"}"#.into()
                             )
@@ -526,7 +529,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         .bind(rsid)
                         .execute(&state.db).await;
                 }
-                let _ = tx.send(Message::Text(r#"{"type":"PONG"}"#.to_string().into()));
+                let _ = client.send(Message::Text(r#"{"type":"PONG"}"#.to_string().into()));
             }
 
             "SCREEN_SHARE_START" => {

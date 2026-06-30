@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use axum::extract::ws::Message;
 use serde_json::json;
 use sqlx::Row;
-use tokio::sync::mpsc::UnboundedSender;
 use base64::{ engine::general_purpose::STANDARD, Engine };
 use hmac::{ Hmac, Mac, KeyInit };
 use sha1::Sha1;
@@ -10,7 +9,7 @@ use chrono::Utc;
 
 use crate::{
     services::attendance_service::AttendanceService,
-    socket::{ events::log_join, room_manager::{ ParticipantState, Room } },
+    socket::{ events::log_join, room_manager::{ ClientSender, ParticipantState, Room } },
     state::AppState,
     utils::error::error_msg,
 };
@@ -20,7 +19,7 @@ pub async fn handle_join(
     room_id: &str,
     user_id: &str,
     name: &str,
-    tx: UnboundedSender<Message>,
+    tx: ClientSender,
     incoming_session_id: &str,
     host_id: Option<String>
 ) {
@@ -327,8 +326,9 @@ pub async fn handle_join(
         ]
     });
 
-    if let Err(e) = tx.send(Message::Text(joined_msg.to_string().into())) {
-        eprintln!("Failed to send JOINED confirmation: {:?}", e);
+    match tx.send(Message::Text(joined_msg.to_string().into())) {
+        Ok(_) => println!("✔ JOINED delivered"),
+        Err(e) => eprintln!("JOINED send failed: {:?}", e),
     }
 
     println!("JOIN COMPLETE for user {} in room {}", user_id, room_id);

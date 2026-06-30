@@ -513,21 +513,14 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             }
 
             "PING" => {
-                if let (Some(rid), Some(uid), Some(rsid)) = (&room_id, &user_id, &session_id) {
-                    let _ = sqlx
-                        ::query(
-                            r#"
-            UPDATE participant_sessions
-            SET last_seen = NOW()
-            WHERE user_id = $1
-            AND room_id = $2
-            AND room_session_id = $3
-            "#
-                        )
-                        .bind(uid)
-                        .bind(rid)
-                        .bind(rsid)
-                        .execute(&state.db).await;
+                if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
+                    let mut rooms = state.rooms.write().await;
+
+                    if let Some(room) = rooms.get_mut(rid) {
+                        if let Some(participant) = room.participants.get_mut(uid) {
+                            participant.last_seen = chrono::Utc::now().timestamp() as u64;
+                        }
+                    }
                 }
                 let _ = client.send(Message::Text(r#"{"type":"PONG"}"#.to_string().into()));
             }

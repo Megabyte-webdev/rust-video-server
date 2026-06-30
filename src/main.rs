@@ -59,21 +59,21 @@ async fn main() {
         turn_config,
     };
 
+    {
+        let cleanup_state = state.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+
+            loop {
+                interval.tick().await;
+                cleanup_stale_sessions(&cleanup_state).await;
+            }
+        });
+    }
+
     // ============ CORS CONFIGURATION ============
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
-
-    // ============ OPTIONAL: CLEANUP STALE SESSIONS ============
-    // Uncomment to enable periodic cleanup
-    // tokio::spawn({
-    //     let state = state.clone();
-    //     async move {
-    //         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-    //         loop {
-    //             interval.tick().await;
-    //             cleanup_stale_sessions(&state).await;
-    //         }
-    //     }
-    // });
 
     // ============ BUILD ROUTER ============
     let app = Router::new()

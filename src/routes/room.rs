@@ -26,6 +26,7 @@ pub struct RoomData {
     pub room_id: String,
     pub created_by: String,
     pub name: String,
+    pub is_open: bool,
 }
 
 #[derive(Serialize)]

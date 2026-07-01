@@ -193,7 +193,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                     .collect();
 
                                 println!(
-                                    "📢 Notifying {} host senders about new join request",
+                                    "Notifying {} host senders about new join request",
                                     host_senders.len()
                                 );
 
@@ -229,7 +229,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             "JOIN_APPROVE" => {
                 let request_id = value["request_id"].as_str().unwrap_or("");
 
-                println!("🎯 JOIN_APPROVE received for request: {}", request_id);
+                println!("JOIN_APPROVE received for request: {}", request_id);
 
                 // ============ VERIFY REQUESTER IS HOST ============
                 {

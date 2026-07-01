@@ -12,6 +12,7 @@ use crate::{
 pub struct CreateRoomRequest {
     pub title: Option<String>,
     pub created_by: String,
+    pub is_open: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -43,15 +44,46 @@ pub async fn create_room(
     Json(req): Json<CreateRoomRequest>
 ) -> Result<Json<CreateRoomResponse>, (StatusCode, Json<ErrorResponse>)> {
     let title = req.title.clone();
+    let created_by = req.created_by.clone();
+    let is_open = req.is_open.unwrap_or(true);
+
+    if created_by.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "created_by cannot be empty".to_string(),
+            }),
+        ));
+    }
+
+    if let Some(ref t) = title {
+        if t.trim().is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Title cannot be empty".to_string(),
+                }),
+            ));
+        }
+        if t.trim().len() > 50 || t.trim().len() < 3 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Title must be between 3 and 50 characters".to_string(),
+                }),
+            ));
+        }
+    }
 
     for _ in 0..5 {
         let room_id = generate_room_id();
 
         let result = sqlx
-            ::query("INSERT INTO rooms (id, name, created_by) VALUES ($1, $2, $3)")
+            ::query("INSERT INTO rooms (id, name, created_by, is_open) VALUES ($1, $2, $3, $4)")
             .bind(&room_id)
             .bind(&title)
             .bind(&req.created_by)
+            .bind(&is_open)
             .execute(&state.db).await;
 
         match result {
@@ -97,7 +129,7 @@ pub async fn get_meeting(
     let result = sqlx
         ::query_as::<_, RoomData>(
             r#"
-        SELECT id as room_id, created_by, name
+        SELECT id as room_id, created_by, name, is_open
         FROM rooms
         WHERE id = $1
         "#

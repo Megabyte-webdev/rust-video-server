@@ -17,6 +17,7 @@ pub async fn handle_leave(
     println!("HANDLE_LEAVE CALLED for user {}", user_id);
 
     let mut recipients = vec![];
+    let mut still_connected = false;
 
     // ---------------- MEMORY LOCK ----------------
     {
@@ -37,7 +38,7 @@ pub async fn handle_leave(
             room.sessions.remove(session_id);
             room.senders.remove(session_id);
 
-            let still_connected = room.sessions.values().any(|uid| uid == user_id);
+            still_connected = room.sessions.values().any(|uid| uid == user_id);
             if !still_connected {
                 room.participants.remove(user_id);
             }
@@ -124,22 +125,33 @@ pub async fn handle_leave(
         return;
     }
 
-    // BROADCAST LEAVE
-    let leave_msg = Message::Text(
-        json!({
-            "type": "USER_LEFT",
-            "participant": {
-                "id": user_id,
-                "name": name,
-                "session_id": session_id
-            }
-        })
-            .to_string()
-            .into()
-    );
+    // ONLY BROADCAST IF USER TRULY LEFT
+    if !still_connected {
+        // ← Add this gate
+        let leave_msg = Message::Text(
+            json!({
+                "type": "USER_LEFT",
+                "participant": {
+                    "id": user_id,
+                    "name": name,
+                    "session_id": session_id
+                }
+            })
+                .to_string()
+                .into()
+        );
 
-    for tx in recipients {
-        let _ = tx.send(leave_msg.clone());
+        for tx in recipients {
+            let _ = tx.send(leave_msg.clone());
+        }
+
+        println!("USER_LEFT broadcast for {}", user_id);
+    } else {
+        println!(
+            "Stale session {} removed for {}, but user still has active sessions",
+            session_id,
+            user_id
+        );
     }
 
     println!("LEAVE COMPLETE for user {}", user_id);

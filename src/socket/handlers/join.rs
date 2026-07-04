@@ -164,94 +164,119 @@ pub async fn handle_join(
 
     println!("Database transaction committed for user {}", user_id);
 
-    // ============ UPDATE MEMORY STATE ============
-    let mut rooms = state.rooms.write().await;
+    // ============ FIX: Collect data from write lock, then release it ============
+    // This prevents deadlock by not holding write lock while acquiring read lock
+    let (
+        existing_participants,
+        presenter_id,
+        presenter_stream_id,
+        pending_reqs,
+        is_host,
+        session_id_to_use,
+    ) = {
+        let mut rooms = state.rooms.write().await;
 
-    let room = rooms.entry(room_id.to_string()).or_insert(Room {
-        participants: HashMap::new(),
-        sessions: HashMap::new(),
-        senders: HashMap::new(),
-        presenter_id: None,
-        host_id: host_id.clone(),
-        is_open: Some(false),
-        pending_requests: HashMap::new(),
-        approved_users: std::collections::HashSet::new(),
-        presenter_stream_id: None,
-    });
+        let room = rooms.entry(room_id.to_string()).or_insert(Room {
+            participants: HashMap::new(),
+            sessions: HashMap::new(),
+            senders: HashMap::new(),
+            presenter_id: None,
+            presenter_stream_id: None,
+            host_id: host_id.clone(),
+            is_open: Some(false),
+            pending_requests: HashMap::new(),
+            approved_users: std::collections::HashSet::new(),
+        });
 
-    // Ensure host_id is set from authoritative source
-    room.host_id = host_id.clone();
+        // Ensure host_id is set from authoritative source
+        room.host_id = host_id.clone();
 
-    // Clean up old sessions for this user (handle reconnects)
-    let old_sessions: Vec<String> = room.sessions
-        .iter()
-        .filter(|(_, uid)| *uid == user_id)
-        .map(|(sid, _)| sid.clone())
-        .collect();
+        // Clean up old sessions for this user (handle reconnects)
+        let old_sessions: Vec<String> = room.sessions
+            .iter()
+            .filter(|(_, uid)| *uid == user_id)
+            .map(|(sid, _)| sid.clone())
+            .collect();
 
-    for sid in old_sessions {
-        room.sessions.remove(&sid);
-        room.senders.remove(&sid);
-        println!("Cleaned up old session {} for user {}", sid, user_id);
-    }
+        for sid in old_sessions {
+            room.sessions.remove(&sid);
+            room.senders.remove(&sid);
+            println!("Cleaned up old session {} for user {}", sid, user_id);
+        }
 
-    // Register new session
-    let session_id = incoming_session_id.to_string();
+        // Register new session
+        let session_id = incoming_session_id.to_string();
 
-    // overwrite session mapping
-    room.sessions.insert(session_id.clone(), user_id.to_string());
+        // overwrite session mapping
+        room.sessions.insert(session_id.clone(), user_id.to_string());
 
-    // ALWAYS ensure participant exists (idempotent upsert)
-    room.participants.insert(user_id.to_string(), ParticipantState {
-        id: user_id.to_string(),
-        name: name.to_string(),
-        session_id: session_id.clone(),
-        last_seen: chrono::Utc::now().timestamp() as u64,
-    });
+        // ALWAYS ensure participant exists (idempotent upsert)
+        room.participants.insert(user_id.to_string(), ParticipantState {
+            id: user_id.to_string(),
+            name: name.to_string(),
+            session_id: session_id.clone(),
+            last_seen: chrono::Utc::now().timestamp() as u64,
+        });
 
-    room.senders.insert(session_id.clone(), tx.clone());
+        room.senders.insert(session_id.clone(), tx.clone());
 
-    // ============ SEND EXISTING USERS TO NEW USER ============
-    let existing: Vec<_> = {
-        let rooms = state.rooms.read().await;
-        if let Some(room) = rooms.get(room_id) {
-            room.participants
-                .values()
-                .filter(|p| p.id != user_id)
-                .map(|p| {
-                    let mut participant_json =
-                        json!({
-                        "id": p.id,
-                        "name": p.name,
-                        "session_id": p.session_id
-                    });
+        // ============ COLLECT DATA FOR EXISTING_USERS ============
+        // Build existing participants list (with screen share state if applicable)
+        let existing: Vec<_> = room.participants
+            .values()
+            .filter(|p| p.id != user_id)
+            .map(|p| {
+                let mut participant_json =
+                    json!({
+                    "id": p.id,
+                    "name": p.name,
+                    "session_id": p.session_id
+                });
 
-                    // If this participant is the current presenter, include their stream ID
-                    if let Some(pid) = &room.presenter_id {
-                        if pid == &p.id {
-                            if let Some(stream_id) = room.presenter_stream_id.as_ref() {
-                                participant_json["isScreenSharing"] = json!(true);
-                                participant_json["remoteScreenStreamId"] = json!(stream_id);
-                            }
+                // If this participant is the current presenter, include their stream ID
+                if let Some(pid) = &room.presenter_id {
+                    if pid == &p.id {
+                        if let Some(stream_id) = room.presenter_stream_id.as_ref() {
+                            participant_json["isScreenSharing"] = json!(true);
+                            participant_json["remoteScreenStreamId"] = json!(stream_id);
                         }
                     }
+                }
 
-                    participant_json
-                })
-                .collect()
+                participant_json
+            })
+            .collect();
+
+        let is_host_flag = host_id.as_deref() == Some(user_id);
+        let pending_requests_list = if is_host_flag {
+            room.pending_requests.values().cloned().collect()
         } else {
             vec![]
-        }
-    };
+        };
 
+        // Collect everything we need while holding the lock
+        (
+            existing,
+            room.presenter_id.clone(),
+            room.presenter_stream_id.clone(),
+            pending_requests_list,
+            is_host_flag,
+            session_id,
+        )
+    }; // ← WRITE LOCK RELEASED HERE
+
+    println!("🔓 Released write lock after updating room state");
+
+    // ============ NOW SAFE: Send EXISTING_USERS TO NEW USER ============
+    // No lock is held here, so this is safe
     if
         let Err(e) = tx.send(
             Message::Text(
                 json!({
-                "type": "EXISTING_USERS",
-                "participants": existing,
-                "presenterId": room.presenter_id
-            })
+                    "type": "EXISTING_USERS",
+                    "participants": existing_participants,
+                    "presenterId": presenter_id
+                })
                     .to_string()
                     .into()
             )
@@ -261,46 +286,48 @@ pub async fn handle_join(
     }
 
     // ============ BROADCAST JOIN TO OTHERS ============
-    let join_msg = Message::Text(
-        json!({
-            "type": "USER_JOINED",
-            "participant": {
-                "id": user_id,
-                "name": name,
-                "session_id": &session_id
-            }
-        })
-            .to_string()
-            .into()
-    );
+    {
+        let rooms = state.rooms.read().await; // ← Safe to acquire read lock now
 
-    let mut broadcast_count = 0;
-    for (sid, sender) in room.senders.iter() {
-        // Skip sending to the joining user's own session
-        if let Some(owner) = room.sessions.get(sid) {
-            if owner == user_id {
-                continue;
-            }
-        } else {
-            // Invariant violation - log but continue
-            eprintln!("WARNING: Sender {} has no corresponding session owner", sid);
-            continue;
-        }
+        if let Some(room) = rooms.get(room_id) {
+            let join_msg = Message::Text(
+                json!({
+                    "type": "USER_JOINED",
+                    "participant": {
+                        "id": user_id,
+                        "name": name,
+                        "session_id": &session_id_to_use
+                    }
+                })
+                    .to_string()
+                    .into()
+            );
 
-        if let Err(e) = sender.send(join_msg.clone()) {
-            eprintln!("Failed to broadcast USER_JOINED to session {}: {:?}", sid, e);
-        } else {
-            broadcast_count += 1;
+            let mut broadcast_count = 0;
+            for (sid, sender) in room.senders.iter() {
+                // Skip sending to the joining user's own session
+                if let Some(owner) = room.sessions.get(sid) {
+                    if owner == user_id {
+                        continue;
+                    }
+                } else {
+                    eprintln!("WARNING: Sender {} has no corresponding session owner", sid);
+                    continue;
+                }
+
+                if let Err(e) = sender.send(join_msg.clone()) {
+                    eprintln!("Failed to broadcast USER_JOINED to session {}: {:?}", sid, e);
+                } else {
+                    broadcast_count += 1;
+                }
+            }
+            println!("Broadcasted join to {} other participants", broadcast_count);
         }
-    }
-    println!("Broadcasted join to {} other participants", broadcast_count);
+    } // ← READ LOCK RELEASED HERE
 
     // ============ SEND PENDING REQUESTS TO HOST ============
-    let is_host = host_id.as_deref() == Some(user_id);
     if is_host {
         println!("HOST JOINED - Sending pending join requests");
-
-        let pending_reqs: Vec<_> = room.pending_requests.values().cloned().collect();
 
         if pending_reqs.is_empty() {
             println!("No pending join requests");
@@ -337,7 +364,7 @@ pub async fn handle_join(
         "room_id": room_id,
         "room_name": room_name,
         "user_id": user_id,
-        "session_id": &session_id,
+        "session_id": &session_id_to_use,
         "iceServers": [
             {
                 "urls": [format!("stun:{}:3478", state.turn_config.server)]

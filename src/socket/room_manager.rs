@@ -33,6 +33,7 @@ pub struct Room {
     pub is_open: Option<bool>,
     pub pending_requests: HashMap<String, JoinRequest>, // request_id -> JoinRequest
     pub approved_users: HashSet<String>,
+    pub presenter_stream_id: Option<String>,
 }
 
 pub type Rooms = std::sync::Arc<RwLock<HashMap<String, Room>>>;

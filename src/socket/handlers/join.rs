@@ -176,6 +176,7 @@ pub async fn handle_join(
         is_open: Some(false),
         pending_requests: HashMap::new(),
         approved_users: std::collections::HashSet::new(),
+        presenter_stream_id: None,
     });
 
     // Ensure host_id is set from authoritative source
@@ -211,26 +212,46 @@ pub async fn handle_join(
     room.senders.insert(session_id.clone(), tx.clone());
 
     // ============ SEND EXISTING USERS TO NEW USER ============
-    let existing: Vec<_> = room.participants
-        .values()
-        .filter(|p| p.id != user_id)
-        .map(|p| {
-            json!({
-                "id": p.id,
-                "name": p.name,
-                "session_id": p.session_id
-            })
-        })
-        .collect();
+    let existing: Vec<_> = {
+        let rooms = state.rooms.read().await;
+        if let Some(room) = rooms.get(room_id) {
+            room.participants
+                .values()
+                .filter(|p| p.id != user_id)
+                .map(|p| {
+                    let mut participant_json =
+                        json!({
+                        "id": p.id,
+                        "name": p.name,
+                        "session_id": p.session_id
+                    });
+
+                    // If this participant is the current presenter, include their stream ID
+                    if let Some(pid) = &room.presenter_id {
+                        if pid == &p.id {
+                            if let Some(stream_id) = room.presenter_stream_id.as_ref() {
+                                participant_json["isScreenSharing"] = json!(true);
+                                participant_json["remoteScreenStreamId"] = json!(stream_id);
+                            }
+                        }
+                    }
+
+                    participant_json
+                })
+                .collect()
+        } else {
+            vec![]
+        }
+    };
 
     if
         let Err(e) = tx.send(
             Message::Text(
                 json!({
-            "type": "EXISTING_USERS",
-            "participants": existing,
-            "presenterId": room.presenter_id
-        })
+                "type": "EXISTING_USERS",
+                "participants": existing,
+                "presenterId": room.presenter_id
+            })
                     .to_string()
                     .into()
             )

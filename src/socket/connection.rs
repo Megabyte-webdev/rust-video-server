@@ -143,6 +143,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                 is_open: Some(false),
                                 pending_requests: HashMap::new(),
                                 approved_users: std::collections::HashSet::new(),
+                                presenter_stream_id: None,
                             });
 
                         // Add to pending requests with tx included

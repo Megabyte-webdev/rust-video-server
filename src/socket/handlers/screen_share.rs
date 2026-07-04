@@ -23,6 +23,7 @@ pub async fn handle_screen_share(
             return;
         }
         room.presenter_id = Some(user_id.to_string());
+        room.presenter_stream_id = stream_id.map(|s| s.to_string());
     } else {
         // Only allow the active presenter to stop their own share
         if room.presenter_id == Some(user_id.to_string()) {

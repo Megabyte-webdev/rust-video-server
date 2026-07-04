@@ -11,7 +11,7 @@ pub struct ParticipantState {
     pub last_seen: u64,
     pub is_presenter: bool,
     pub is_host: bool,
-    pub camera_id: Option<String>,
+    pub camera_stream_id: Option<String>,
     pub screen_share_stream_id: Option<String>,
 }
 

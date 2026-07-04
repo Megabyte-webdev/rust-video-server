@@ -29,7 +29,7 @@ pub async fn handle_screen_share(
         if let Some(participant) = room.participants.get_mut(user_id) {
             participant.is_presenter = true;
             participant.screen_share_stream_id = stream_id.map(|s| s.to_string());
-            participant.camera_id = camera_id.map(|c| c.to_string());
+            participant.camera_stream_id = camera_id.map(|c| c.to_string());
         }
     } else {
         // Only allow the active presenter to stop their own share
@@ -47,7 +47,7 @@ pub async fn handle_screen_share(
         "type": msg_type,
         "peerId": user_id,
         "stream_id": stream_id,
-        "camera_id": camera_id,
+        "camera_stream_id": camera_id,
         
     })
             .to_string()

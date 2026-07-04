@@ -212,7 +212,7 @@ pub async fn handle_join(
             last_seen: chrono::Utc::now().timestamp() as u64,
             is_presenter: false,
             is_host: user_id == host_id.clone().unwrap_or_default(),
-            camera_id: camera_stream_id,
+            camera_stream_id: camera_stream_id,
             screen_share_stream_id: None,
         });
 
@@ -229,7 +229,7 @@ pub async fn handle_join(
                     "name": p.name,
                     "session_id": p.session_id,
                     "isHost": p.is_host,
-                    "cameraId": p.camera_id,
+                    "cameraId": p.camera_stream_id,
                     "isPresenter": p.is_presenter,
                 });
 

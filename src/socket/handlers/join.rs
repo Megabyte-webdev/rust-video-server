@@ -266,24 +266,6 @@ pub async fn handle_join(
 
     println!("🔓 Released write lock after updating room state");
 
-    // NOW SAFE: Send EXISTING_USERS TO NEW USER
-    // No lock is held here, so this is safe
-    if
-        let Err(e) = tx.send(
-            Message::Text(
-                json!({
-                    "type": "EXISTING_USERS",
-                    "participants": existing_participants,
-                    "presenterId": presenter_id
-                })
-                    .to_string()
-                    .into()
-            )
-        )
-    {
-        eprintln!("Failed to send existing users list: {:?}", e);
-    }
-
     // BROADCAST JOIN TO OTHERS
     {
         let rooms = state.rooms.read().await; // ← Safe to acquire read lock now
@@ -379,6 +361,23 @@ pub async fn handle_join(
     match tx.send(Message::Text(joined_msg.to_string().into())) {
         Ok(_) => println!("✔ JOINED delivered"),
         Err(e) => eprintln!("JOINED send failed: {:?}", e),
+    }
+
+    // Send EXISTING_USERS TO NEW USER
+    if
+        let Err(e) = tx.send(
+            Message::Text(
+                json!({
+                    "type": "EXISTING_USERS",
+                    "participants": existing_participants,
+                    "presenterId": presenter_id
+                })
+                    .to_string()
+                    .into()
+            )
+        )
+    {
+        eprintln!("Failed to send existing users list: {:?}", e);
     }
 
     println!("JOIN COMPLETE for user {} in room {}", user_id, room_id);

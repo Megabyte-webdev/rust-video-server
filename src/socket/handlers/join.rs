@@ -21,11 +21,12 @@ pub async fn handle_join(
     name: &str,
     tx: ClientSender,
     incoming_session_id: &str,
-    host_id: Option<String>
+    host_id: Option<String>,
+    camera_stream_id: Option<String>
 ) {
     println!("👤 JOIN STARTED: {} ({}) -> room {}", user_id, name, room_id);
 
-    // ============ GENERATE TURN CREDENTIALS ============
+    // GENERATE TURN CREDENTIALS
     let expiration = Utc::now().timestamp() + 24 * 3600;
     let username = format!("{}:{}", expiration, user_id);
 
@@ -38,7 +39,7 @@ pub async fn handle_join(
     let credential = STANDARD.encode(result);
     println!("🔐 Generated TURN credentials for user {}", name);
 
-    // ============ CHECK ROOM EXISTS & FETCH NAME ============
+    // CHECK ROOM EXISTS & FETCH NAME
     let room_name: String = match
         sqlx
             ::query_scalar("SELECT name FROM rooms WHERE id = $1")
@@ -58,7 +59,7 @@ pub async fn handle_join(
         }
     };
 
-    // ============ START TRANSACTION ============
+    // START TRANSACTION
     let mut tx_db = match state.db.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -70,7 +71,7 @@ pub async fn handle_join(
 
     let rsid = uuid::Uuid::new_v4().to_string();
 
-    // ============ INSERT ROOM SESSION ============
+    // INSERT ROOM SESSION
     if
         let Err(e) = sqlx
             ::query(
@@ -90,7 +91,7 @@ pub async fn handle_join(
         return;
     }
 
-    // ============ RECORD ATTENDANCE ============
+    // RECORD ATTENDANCE
     if let Err(e) = AttendanceService::mark_join(&state.db, room_id, user_id, name).await {
         eprintln!("Failed to record attendance: {:?}", e);
         let _ = tx.send(error_msg("Failed to record attendance"));
@@ -98,7 +99,7 @@ pub async fn handle_join(
         return;
     }
 
-    // ============ INSERT PARTICIPANT SESSION ============
+    // INSERT PARTICIPANT SESSION
     if
         let Err(e) = sqlx
             ::query(
@@ -123,7 +124,7 @@ pub async fn handle_join(
         return;
     }
 
-    // ============ UPSERT PARTICIPANT ============
+    // UPSERT PARTICIPANT
     if
         let Err(e) = sqlx
             ::query(
@@ -147,7 +148,7 @@ pub async fn handle_join(
         return;
     }
 
-    // ============ LOG JOIN EVENT - INSIDE TRANSACTION ============
+    // LOG JOIN EVENT - INSIDE TRANSACTION
     if let Err(e) = log_join(&mut tx_db, room_id, user_id, incoming_session_id, name).await {
         eprintln!("Failed to log join event: {:?}", e);
         let _ = tx.send(error_msg("Failed to log join event"));
@@ -155,7 +156,7 @@ pub async fn handle_join(
         return;
     }
 
-    // ============ COMMIT TRANSACTION ============
+    // COMMIT TRANSACTION
     if let Err(e) = tx_db.commit().await {
         eprintln!("Failed to commit join transaction: {:?}", e);
         let _ = tx.send(error_msg("Failed to commit join transaction"));
@@ -164,16 +165,9 @@ pub async fn handle_join(
 
     println!("Database transaction committed for user {}", user_id);
 
-    // ============ FIX: Collect data from write lock, then release it ============
+    // FIX: Collect data from write lock, then release it
     // This prevents deadlock by not holding write lock while acquiring read lock
-    let (
-        existing_participants,
-        presenter_id,
-        presenter_stream_id,
-        pending_reqs,
-        is_host,
-        session_id_to_use,
-    ) = {
+    let (existing_participants, presenter_id, _, pending_reqs, is_host, session_id_to_use) = {
         let mut rooms = state.rooms.write().await;
 
         let room = rooms.entry(room_id.to_string()).or_insert(Room {
@@ -216,12 +210,15 @@ pub async fn handle_join(
             name: name.to_string(),
             session_id: session_id.clone(),
             last_seen: chrono::Utc::now().timestamp() as u64,
+            is_presenter: false,
+            is_host: user_id == host_id.clone().unwrap_or_default(),
+            camera_id: camera_stream_id,
+            screen_share_stream_id: None,
         });
 
         room.senders.insert(session_id.clone(), tx.clone());
 
-        // ============ COLLECT DATA FOR EXISTING_USERS ============
-        // Build existing participants list (with screen share state if applicable)
+        // Build existing participants list
         let existing: Vec<_> = room.participants
             .values()
             .filter(|p| p.id != user_id)
@@ -230,10 +227,12 @@ pub async fn handle_join(
                     json!({
                     "id": p.id,
                     "name": p.name,
-                    "session_id": p.session_id
+                    "session_id": p.session_id,
+                    "isHost": p.is_host,
+                    "cameraId": p.camera_id,
+                    "isPresenter": p.is_presenter,
                 });
 
-                // If this participant is the current presenter, include their stream ID
                 if let Some(pid) = &room.presenter_id {
                     if pid == &p.id {
                         if let Some(stream_id) = room.presenter_stream_id.as_ref() {
@@ -267,7 +266,7 @@ pub async fn handle_join(
 
     println!("🔓 Released write lock after updating room state");
 
-    // ============ NOW SAFE: Send EXISTING_USERS TO NEW USER ============
+    // NOW SAFE: Send EXISTING_USERS TO NEW USER
     // No lock is held here, so this is safe
     if
         let Err(e) = tx.send(
@@ -285,7 +284,7 @@ pub async fn handle_join(
         eprintln!("Failed to send existing users list: {:?}", e);
     }
 
-    // ============ BROADCAST JOIN TO OTHERS ============
+    // BROADCAST JOIN TO OTHERS
     {
         let rooms = state.rooms.read().await; // ← Safe to acquire read lock now
 
@@ -325,7 +324,7 @@ pub async fn handle_join(
         }
     } // ← READ LOCK RELEASED HERE
 
-    // ============ SEND PENDING REQUESTS TO HOST ============
+    // SEND PENDING REQUESTS TO HOST
     if is_host {
         println!("HOST JOINED - Sending pending join requests");
 
@@ -357,7 +356,7 @@ pub async fn handle_join(
         }
     }
 
-    // ============ SEND JOIN CONFIRMATION WITH ICE SERVERS ============
+    // SEND JOIN CONFIRMATION WITH ICE SERVERS
     let joined_msg =
         json!({
         "type": "JOINED",

@@ -9,6 +9,10 @@ pub struct ParticipantState {
     pub name: String,
     pub session_id: String,
     pub last_seen: u64,
+    pub is_presenter: bool,
+    pub is_host: bool,
+    pub camera_id: Option<String>,
+    pub screen_share_stream_id: Option<String>,
 }
 
 #[derive(Clone)]

@@ -9,7 +9,8 @@ pub async fn handle_screen_share(
     room_id: &str,
     user_id: &str,
     is_start: bool,
-    stream_id: Option<&str>
+    stream_id: Option<&str>,
+    camera_id: Option<&str>
 ) {
     let mut rooms = state.rooms.write().await;
     let Some(room) = rooms.get_mut(room_id) else {
@@ -24,6 +25,12 @@ pub async fn handle_screen_share(
         }
         room.presenter_id = Some(user_id.to_string());
         room.presenter_stream_id = stream_id.map(|s| s.to_string());
+
+        if let Some(participant) = room.participants.get_mut(user_id) {
+            participant.is_presenter = true;
+            participant.screen_share_stream_id = stream_id.map(|s| s.to_string());
+            participant.camera_id = camera_id.map(|c| c.to_string());
+        }
     } else {
         // Only allow the active presenter to stop their own share
         if room.presenter_id == Some(user_id.to_string()) {
@@ -39,7 +46,9 @@ pub async fn handle_screen_share(
         json!({
         "type": msg_type,
         "peerId": user_id,
-        "stream_id": stream_id
+        "stream_id": stream_id,
+        "camera_id": camera_id,
+        
     })
             .to_string()
             .into()

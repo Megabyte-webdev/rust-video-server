@@ -14,7 +14,7 @@ nanoid = "0.4.0"
 redis = { version = "1.2.0", features = ["tokio-comp", "aio"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-sqlx = {version="0.8.6", features=["postgres", "runtime-tokio-rustls"]}
+sqlx = {version="0.8.6", features=["postgres", "runtime-tokio-rustls", "chrono"]}
 tokio = { version = "1.51.0", features = ["full"] }
 tokio-tungstenite = "0.29.0"
 tower-http = { version = "0.6.8", features = ["cors"] }

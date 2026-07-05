@@ -1,5 +1,8 @@
-use axum::{ extract::{ Path, State }, http::StatusCode, Json };
+use std::f32::consts::E;
 
+use axum::{ Json, extract::{ Path, State }, http::StatusCode };
+
+use reqwest::Response;
 use serde::{ Deserialize, Serialize };
 
 use crate::{
@@ -19,6 +22,10 @@ pub struct CreateRoomRequest {
 pub struct CreateRoomResponse {
     pub id: String,
     pub title: Option<String>,
+}
+#[derive(Serialize)]
+pub struct MessageResponse {
+    pub message: String,
 }
 
 #[derive(sqlx::FromRow, Serialize)]
@@ -171,12 +178,37 @@ pub async fn get_meeting(
     }
 }
 
-pub async fn delete_room(state: AppState, Path(room_id): Path<String>) -> Result<String, String> {
+pub async fn delete_room(
+    State(state): State<AppState>,
+    Path(room_id): Path<String>
+) -> Result<(StatusCode, Json<MessageResponse>), (StatusCode, Json<ErrorResponse>)> {
     // Delete room from DB
-    let _ = sqlx::query("DELETE FROM rooms WHERE id = $1").bind(&room_id).execute(&state.db).await;
+    let result = sqlx
+        ::query("DELETE FROM rooms WHERE id = $1")
+        .bind(&room_id)
+        .execute(&state.db).await;
 
     // Cleanup pending requests & memory
-    handle_room_close(&state, &room_id).await; // ← HERE
+    handle_room_close(&state, &room_id).await;
 
-    Ok("Room deleted".to_string())
+    match result {
+        Ok(_) =>
+            Ok((
+                StatusCode::OK,
+                Json(MessageResponse {
+                    message: "Room deleted successfully".to_string(),
+                }),
+            )),
+
+        Err(err) => {
+            eprintln!("delete_room error: {:?}", err);
+
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Database error while deleting room".to_string(),
+                }),
+            ))
+        }
+    }
 }

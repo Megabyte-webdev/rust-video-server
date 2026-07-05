@@ -13,6 +13,7 @@ mod models;
 mod utils;
 mod services;
 
+use crate::routes::api_router_setup::create_api_router;
 use crate::{
     routes::room::{ create_room, get_meeting },
     socket::handlers::cleanup::cleanup_stale_sessions,
@@ -78,8 +79,7 @@ async fn main() {
     // ============ BUILD ROUTER ============
     let app = Router::new()
         .route("/ws", get(socket_response))
-        .route("/rooms", post(create_room))
-        .route("/room/{id}", get(get_meeting))
+        .nest("/api", create_api_router())
         .with_state(state)
         .layer(cors);
 

@@ -1,37 +1,70 @@
-# --- Stage 1: Build ---
-FROM rust:1.88-slim AS builder
+# syntax=docker/dockerfile:1
+
+# -----------------------------
+# Stage 1: Build
+# -----------------------------
+FROM rust:1.90-slim AS builder
 
 WORKDIR /app
 
-# Install build dependencies (needed for crates like sqlx and openssl)
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install build dependencies
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        pkg-config \
+        libssl-dev \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy your source code
+# Copy manifests first (better Docker layer caching)
+COPY Cargo.toml Cargo.lock ./
+
+# Create a dummy source so dependencies can be cached
+RUN mkdir src && \
+    echo "fn main() {}" > src/main.rs && \
+    cargo build --release || true
+
+# Remove dummy source
+RUN rm -rf src
+
+# Copy the rest of the project
 COPY . .
 
-# Build for release
+# Build release binary
 RUN cargo build --release
 
-# --- Stage 2: Run ---
+# -----------------------------
+# Stage 2: Runtime
+# -----------------------------
 FROM debian:bookworm-slim AS runtime
 
 WORKDIR /app
 
-# Install runtime dependencies (OpenSSL is usually required by sqlx/rustls)
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+# Update packages and install only what's required
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl3 && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -r appuser && \
+    useradd -r -g appuser appuser
 
-# Copy only the binary from the builder stage
-# Replace 'rust-video-sdk' with the exact name in your Cargo.toml [package]
-COPY --from=builder /app/target/release/rust-video-sdk /app/rust-video-sdk
+# Copy binary
+COPY --from=builder /app/target/release/rust-video-sdk ./rust-video-sdk
 
-# Expose the port your Axum server is listening on
+# Ensure binary is executable
+RUN chmod +x ./rust-video-sdk
+
+# Use non-root user
+USER appuser
+
+# Expose Axum port
 EXPOSE 3000
 
-# Run the binary
+# Optional healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["./rust-video-sdk", "--help"]
+
+# Start application
 CMD ["./rust-video-sdk"]

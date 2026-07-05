@@ -36,7 +36,7 @@ RUN cargo build --release
 # -----------------------------
 # Stage 2: Runtime
 # -----------------------------
-FROM debian:bookworm-slim AS runtime
+FROM debian:13.5-slim AS runtime
 
 WORKDIR /app
 

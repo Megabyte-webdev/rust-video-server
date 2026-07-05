@@ -1,129 +1,55 @@
-use axum::{ extract::{ Path, State, Query }, http::StatusCode, Json };
-use serde::{ Deserialize, Serialize };
+use axum::{ Json, extract::{ Path, Query, State }, http::StatusCode };
 use chrono::{ DateTime, Utc };
 
-use crate::state::AppState;
+use crate::{
+    services::pagination::{
+        AttendanceListResponse,
+        AttendanceQuery,
+        AttendanceRecord,
+        DetailedParticipantInfo,
+        DetailedParticipantResponse,
+        ErrorResponse,
+        PaginationMeta,
+        PaginationQuery,
+        ParticipantSessionInfo,
+        ParticipantStats,
+        ParticipantStatsResponse,
+        RoomSession,
+        RoomSessionResponse,
+    },
+    state::AppState,
+};
 
-// ATTENDANCE RECORDS
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AttendanceRecord {
-    pub user_id: String,
-    pub name: String,
-    pub joined_at: DateTime<Utc>,
-    pub left_at: Option<DateTime<Utc>>,
-    pub duration_seconds: Option<i64>,
-    pub session_count: i32,
-    pub is_active: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AttendanceListResponse {
-    pub room_id: String,
-    pub room_name: String,
-    pub total_participants: i32,
-    pub active_participants: i32,
-    pub records: Vec<AttendanceRecord>,
-    pub fetched_at: DateTime<Utc>,
-}
-
-// PARTICIPANT STATS
-
-#[derive(Debug, Serialize, Clone)]
-pub struct ParticipantStats {
-    pub user_id: String,
-    pub name: String,
-    pub session_id: String,
-    pub joined_at: DateTime<Utc>,
-    pub last_seen: DateTime<Utc>,
-    pub time_in_room_seconds: i64,
-    pub camera_enabled: bool,
-    pub mic_enabled: bool,
-    pub screen_share_count: i32,
-    pub screen_share_duration_seconds: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ParticipantStatsResponse {
-    pub room_id: String,
-    pub participants: Vec<ParticipantStats>,
-    pub total_count: i32,
-    pub active_count: i32,
-}
-
-// ROOM SESSION DATA
-
-#[derive(Debug, Serialize, Clone)]
-pub struct RoomSession {
-    pub session_id: String,
-    pub room_id: String,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: Option<DateTime<Utc>>,
-    pub duration_seconds: Option<i64>,
-    pub participant_count: i32,
-    pub peak_concurrent: i32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RoomSessionResponse {
-    pub room_id: String,
-    pub sessions: Vec<RoomSession>,
-    pub total_sessions: i32,
-}
-
-// DETAILED PARTICIPANT INFO
-
-#[derive(Debug, Serialize)]
-pub struct DetailedParticipantInfo {
-    pub user_id: String,
-    pub name: String,
-    pub is_host: bool,
-    pub is_presenter: bool,
-    pub camera_stream_id: Option<String>,
-    pub screen_share_stream_id: Option<String>,
-    pub joined_at: DateTime<Utc>,
-    pub last_seen: DateTime<Utc>,
-    pub duration_seconds: i64,
-    pub sessions: Vec<ParticipantSessionInfo>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ParticipantSessionInfo {
-    pub session_id: String,
-    pub joined_at: DateTime<Utc>,
-    pub left_at: Option<DateTime<Utc>>,
-    pub duration_seconds: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DetailedParticipantResponse {
-    pub data: DetailedParticipantInfo,
-}
-
-// QUERY FILTERS
-
-#[derive(Debug, Deserialize)]
-pub struct AttendanceQuery {
-    #[serde(default)]
-    pub include_inactive: bool,
-    #[serde(default)]
-    pub sort_by: Option<String>, // "duration", "name", "joined_at"
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-    pub code: String,
-}
-
-// ENDPOINTS
-
-/// Get all attendance records for a room
 pub async fn get_attendance(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Query(q): Query<AttendanceQuery>
 ) -> Result<Json<AttendanceListResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Validate pagination
+    let page = q.page.max(1);
+    let limit = q.limit.clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    // Get total count first
+    let count_result: Result<(i64,), _> = sqlx
+        ::query_as("SELECT COUNT(*) FROM participants WHERE room_id = $1")
+        .bind(&room_id)
+        .fetch_one(&state.db).await;
+
+    let total_count = match count_result {
+        Ok((count,)) => count,
+        Err(e) => {
+            eprintln!("get_attendance count error: {:?}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to fetch attendance records".to_string(),
+                    code: "ATTENDANCE_FETCH_FAILED".to_string(),
+                }),
+            ));
+        }
+    };
+
     let query_str =
         r#"
         SELECT 
@@ -137,6 +63,7 @@ pub async fn get_attendance(
         FROM participants p
         WHERE p.room_id = $1
         ORDER BY p.first_joined_at DESC
+        LIMIT $2 OFFSET $3
     "#;
 
     match
@@ -145,6 +72,8 @@ pub async fn get_attendance(
                 query_str
             )
             .bind(&room_id)
+            .bind(limit as i64)
+            .bind(offset as i64)
             .fetch_all(&state.db).await
     {
         Ok(rows) => {
@@ -185,13 +114,16 @@ pub async fn get_attendance(
                 )
                 .collect();
 
+            let pagination = PaginationMeta::new(page, limit, total_count);
+
             Ok(
                 Json(AttendanceListResponse {
                     room_id: room_id.clone(),
                     room_name,
-                    total_participants: records.len() as i32,
+                    total_participants: total_count as i32,
                     active_participants: active_count,
                     records,
+                    pagination,
                     fetched_at: Utc::now(),
                 })
             )
@@ -209,11 +141,35 @@ pub async fn get_attendance(
     }
 }
 
-/// Get current participant list with stats
 pub async fn get_participants(
     State(state): State<AppState>,
-    Path(room_id): Path<String>
+    Path(room_id): Path<String>,
+    Query(q): Query<PaginationQuery>
 ) -> Result<Json<ParticipantStatsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let page = q.page.max(1);
+    let limit = q.limit.clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    // Get total count
+    let count_result: Result<(i64,), _> = sqlx
+        ::query_as("SELECT COUNT(*) FROM participant_sessions WHERE room_id = $1")
+        .bind(&room_id)
+        .fetch_one(&state.db).await;
+
+    let total_count = match count_result {
+        Ok((count,)) => count,
+        Err(e) => {
+            eprintln!("get_participants count error: {:?}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to fetch participants".to_string(),
+                    code: "PARTICIPANTS_FETCH_FAILED".to_string(),
+                }),
+            ));
+        }
+    };
+
     let query_str =
         r#"
         SELECT 
@@ -222,77 +178,48 @@ pub async fn get_participants(
             ps.id as session_id,
             ps.joined_at,
             ps.last_seen,
-            EXTRACT(EPOCH FROM (ps.last_seen - ps.joined_at))::bigint as time_in_room_seconds,
-            true as camera_enabled,
-            true as mic_enabled,
-            0::int as screen_share_count,
-            NULL::bigint as screen_share_duration_seconds
+            EXTRACT(EPOCH FROM (ps.last_seen - ps.joined_at))::bigint as time_in_room_seconds
         FROM participant_sessions ps
         WHERE ps.room_id = $1
-        AND ps.last_seen > NOW() - INTERVAL '30 minutes'
         ORDER BY ps.joined_at ASC
+        LIMIT $2 OFFSET $3
     "#;
 
     match
         sqlx
-            ::query_as::<
-                _,
-                (
-                    String,
-                    String,
-                    String,
-                    DateTime<Utc>,
-                    DateTime<Utc>,
-                    i64,
-                    bool,
-                    bool,
-                    i32,
-                    Option<i64>,
-                )
-            >(query_str)
+            ::query_as::<_, (String, String, String, DateTime<Utc>, DateTime<Utc>, Option<i64>)>(
+                query_str
+            )
             .bind(&room_id)
+            .bind(limit as i64)
+            .bind(offset as i64)
             .fetch_all(&state.db).await
     {
         Ok(rows) => {
-            let active_count = rows.len() as i32;
-
             let participants: Vec<ParticipantStats> = rows
                 .into_iter()
-                .map(
-                    |(
+                .map(|(user_id, name, session_id, joined_at, last_seen, duration)| {
+                    ParticipantStats {
                         user_id,
                         name,
                         session_id,
                         joined_at,
                         last_seen,
-                        duration,
-                        cam_enabled,
-                        mic_enabled,
-                        ss_count,
-                        ss_duration,
-                    )| {
-                        ParticipantStats {
-                            user_id,
-                            name,
-                            session_id,
-                            joined_at,
-                            last_seen,
-                            time_in_room_seconds: duration,
-                            camera_enabled: cam_enabled,
-                            mic_enabled: mic_enabled,
-                            screen_share_count: ss_count,
-                            screen_share_duration_seconds: ss_duration,
-                        }
+                        time_in_room_seconds: duration,
                     }
-                )
+                })
                 .collect();
+
+            let active_count = participants.len() as i32;
+            let pagination = PaginationMeta::new(page, limit, total_count);
 
             Ok(
                 Json(ParticipantStatsResponse {
                     room_id: room_id.clone(),
                     participants,
-                    total_count: active_count,
+                    total_count: total_count as i32,
                     active_count,
+                    pagination,
                 })
             )
         }
@@ -309,11 +236,35 @@ pub async fn get_participants(
     }
 }
 
-/// Get room session history
 pub async fn get_room_sessions(
     State(state): State<AppState>,
-    Path(room_id): Path<String>
+    Path(room_id): Path<String>,
+    Query(q): Query<PaginationQuery>
 ) -> Result<Json<RoomSessionResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let page = q.page.max(1);
+    let limit = q.limit.clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    // Get total count
+    let count_result: Result<(i64,), _> = sqlx
+        ::query_as("SELECT COUNT(*) FROM room_sessions WHERE room_id = $1")
+        .bind(&room_id)
+        .fetch_one(&state.db).await;
+
+    let total_count = match count_result {
+        Ok((count,)) => count,
+        Err(e) => {
+            eprintln!("get_room_sessions count error: {:?}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to fetch room sessions".to_string(),
+                    code: "SESSIONS_FETCH_FAILED".to_string(),
+                }),
+            ));
+        }
+    };
+
     let query_str =
         r#"
         SELECT 
@@ -327,6 +278,7 @@ pub async fn get_room_sessions(
         FROM room_sessions rs
         WHERE rs.room_id = $1
         ORDER BY rs.started_at DESC
+        LIMIT $2 OFFSET $3
     "#;
 
     match
@@ -335,11 +287,12 @@ pub async fn get_room_sessions(
                 query_str
             )
             .bind(&room_id)
+            .bind(limit as i64)
+            .bind(offset as i64)
             .fetch_all(&state.db).await
     {
         Ok(rows) => {
             let sessions: Vec<RoomSession> = rows
-                .clone()
                 .into_iter()
                 .map(|(session_id, room_id, started_at, ended_at, duration, pc, peak)| {
                     RoomSession {
@@ -354,11 +307,14 @@ pub async fn get_room_sessions(
                 })
                 .collect();
 
+            let pagination = PaginationMeta::new(page, limit, total_count);
+
             Ok(
                 Json(RoomSessionResponse {
                     room_id: room_id.clone(),
                     sessions,
-                    total_sessions: rows.len() as i32,
+                    total_sessions: total_count as i32,
+                    pagination,
                 })
             )
         }
@@ -375,92 +331,143 @@ pub async fn get_room_sessions(
     }
 }
 
-/// Get detailed info for a specific participant
 pub async fn get_participant_detail(
     State(state): State<AppState>,
-    Path((room_id, user_id)): Path<(String, String)>
+    Path((room_id, user_id)): Path<(String, String)>,
+    Query(q): Query<PaginationQuery> // ← Add pagination params
 ) -> Result<Json<DetailedParticipantResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Validate pagination
+    let page = q.page.max(1);
+    let limit = q.limit.clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    // Get room host_id
+    let room_result = sqlx
+        ::query_scalar::<_, Option<String>>("SELECT created_by FROM rooms WHERE id = $1")
+        .bind(&room_id)
+        .fetch_optional(&state.db).await;
+
+    let host_id = match room_result {
+        Ok(Some(Some(hid))) => Some(hid),
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("get_participant_detail room error: {:?}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to fetch room info".to_string(),
+                    code: "ROOM_FETCH_FAILED".to_string(),
+                }),
+            ));
+        }
+    };
+
     // Get participant info
     let participant_result = sqlx
-        ::query_as::<_, (String, String, bool)>(
-            "SELECT id, name, first_joined_at FROM participants WHERE id = $1 AND room_id = $2"
+        ::query_as::<_, (String, String, String, DateTime<Utc>, DateTime<Utc>, i64)>(
+            r#"
+            SELECT 
+                id,
+                room_id,
+                name,
+                first_joined_at,
+                last_seen,
+                EXTRACT(EPOCH FROM (last_seen - first_joined_at))::bigint as duration_seconds
+            FROM participants 
+            WHERE id = $1 AND room_id = $2
+            "#
         )
         .bind(&user_id)
         .bind(&room_id)
         .fetch_optional(&state.db).await;
 
     match participant_result {
-        Ok(Some((user_id, name, _))) => {
-            // Get sessions
-            let sessions_result = sqlx
-                ::query_as::<_, (String, DateTime<Utc>, Option<DateTime<Utc>>)>(
-                    r#"
-                SELECT id, joined_at, NULL::timestamp as left_at 
-                FROM participant_sessions 
-                WHERE user_id = $1 AND room_id = $2
-                ORDER BY joined_at ASC
-                "#
+        Ok(Some((user_id, room_id, name, joined_at, last_seen, duration_seconds))) => {
+            let is_host = host_id.as_deref() == Some(&user_id);
+
+            // Get total session count
+            let count_result: Result<(i64,), _> = sqlx
+                ::query_as(
+                    "SELECT COUNT(*) FROM participant_sessions WHERE user_id = $1 AND room_id = $2"
                 )
                 .bind(&user_id)
                 .bind(&room_id)
+                .fetch_one(&state.db).await;
+
+            let total_sessions = match count_result {
+                Ok((count,)) => count,
+                Err(e) => {
+                    eprintln!("get_participant_detail sessions count error: {:?}", e);
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Failed to fetch session count".to_string(),
+                            code: "SESSIONS_COUNT_FAILED".to_string(),
+                        }),
+                    ));
+                }
+            };
+
+            // Get paginated sessions
+            let sessions_result = sqlx
+                ::query_as::<_, (String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+                    r#"
+                    SELECT 
+                        id,
+                        joined_at,
+                        last_seen
+                    FROM participant_sessions 
+                    WHERE user_id = $1 AND room_id = $2
+                    ORDER BY joined_at DESC
+                    LIMIT $3 OFFSET $4
+                    "#
+                )
+                .bind(&user_id)
+                .bind(&room_id)
+                .bind(limit as i64)
+                .bind(offset as i64)
                 .fetch_all(&state.db).await;
 
-            match sessions_result {
+            let sessions = match sessions_result {
                 Ok(session_rows) => {
-                    let sessions: Vec<ParticipantSessionInfo> = session_rows
+                    session_rows
                         .into_iter()
-                        .map(|(session_id, joined_at, left_at)| {
-                            let duration = left_at.map(
-                                |lt| (lt.timestamp() - joined_at.timestamp()) as i64
+                        .map(|(session_id, joined_at, last_seen)| {
+                            let duration = last_seen.map(
+                                |ls| (ls.timestamp() - joined_at.timestamp()) as i64
                             );
                             ParticipantSessionInfo {
                                 session_id,
                                 joined_at,
-                                left_at,
+                                left_at: last_seen,
                                 duration_seconds: duration,
                             }
                         })
-                        .collect();
-
-                    let total_duration: i64 = sessions
-                        .iter()
-                        .filter_map(|s| s.duration_seconds)
-                        .sum();
-
-                    Ok(
-                        Json(DetailedParticipantResponse {
-                            data: DetailedParticipantInfo {
-                                user_id,
-                                name,
-                                is_host: false,
-                                is_presenter: false,
-                                camera_stream_id: None,
-                                screen_share_stream_id: None,
-                                joined_at: sessions
-                                    .first()
-                                    .map(|s| s.joined_at)
-                                    .unwrap_or_else(Utc::now),
-                                last_seen: sessions
-                                    .last()
-                                    .map(|s| s.left_at.unwrap_or_else(Utc::now))
-                                    .unwrap_or_else(Utc::now),
-                                duration_seconds: total_duration,
-                                sessions,
-                            },
-                        })
-                    )
+                        .collect()
                 }
                 Err(e) => {
                     eprintln!("get_participant_detail sessions error: {:?}", e);
-                    Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Failed to fetch participant sessions".to_string(),
-                            code: "PARTICIPANT_SESSIONS_FETCH_FAILED".to_string(),
-                        }),
-                    ))
+                    vec![]
                 }
-            }
+            };
+
+            let pagination = PaginationMeta::new(page, limit, total_sessions);
+
+            Ok(
+                Json(DetailedParticipantResponse {
+                    data: DetailedParticipantInfo {
+                        user_id,
+                        room_id,
+                        name,
+                        is_host,
+                        joined_at,
+                        last_seen,
+                        duration_seconds,
+                        sessions,
+                    },
+                    pagination,
+                })
+            )
         }
         Ok(None) => {
             Err((

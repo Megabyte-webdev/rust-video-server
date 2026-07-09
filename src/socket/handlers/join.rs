@@ -347,15 +347,21 @@ pub async fn handle_join(
         "user_id": user_id,
         "session_id": &session_id_to_use,
         "iceServers": [
-            {
-                "urls": [format!("stun:{}:3478", state.turn_config.server)]
-            },
-            {
-                "urls": [format!("turn:{}:3478", state.turn_config.server)],
-                "username": username,
-                "credential": credential
-            }
+    {
+        "urls": [
+            format!("stun:{}:3478", state.turn_config.server)
         ]
+    },
+    {
+        "urls": [
+            format!("turn:{}:3478?transport=udp", state.turn_config.server),
+            format!("turn:{}:3478?transport=tcp", state.turn_config.server),
+            format!("turns:{}:5349?transport=tcp", state.turn_config.server)
+        ],
+        "username": username,
+        "credential": credential
+    }
+]
     });
 
     match tx.send(Message::Text(joined_msg.to_string().into())) {

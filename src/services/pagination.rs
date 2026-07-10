@@ -61,10 +61,10 @@ pub struct AttendanceRecord {
 #[derive(Debug, Deserialize)]
 pub struct AttendanceQuery {
     #[serde(default)]
-    pub include_inactive: bool,
+    pub _include_inactive: bool,
 
     #[serde(default)]
-    pub sort_by: Option<String>,
+    pub _sort_by: Option<String>,
 
     #[serde(default = "default_page")]
     pub page: u32,

@@ -5,7 +5,7 @@ use crate::state::AppState;
 
 pub async fn handle_signaling(state: &AppState, room_id: &str, sender_id: &str, raw_msg: &str) {
     let Ok(value) = serde_json::from_str::<Value>(raw_msg) else {
-        println!("❌ Invalid signaling JSON");
+        println!("Invalid signaling JSON");
         return;
     };
 
@@ -16,8 +16,8 @@ pub async fn handle_signaling(state: &AppState, room_id: &str, sender_id: &str, 
 
     let rooms = state.rooms.read().await;
 
-    let Some(room) = rooms.get(room_id) else {
-        println!("❌ Room not found");
+    let Some(_room) = rooms.get(room_id) else {
+        println!("Room not found");
         return;
     };
 
@@ -43,10 +43,10 @@ pub async fn handle_signaling(state: &AppState, room_id: &str, sender_id: &str, 
                         if let Some(sender) = room.senders.get(&session_id) {
                             let _ = sender.send(outbound);
                         } else {
-                            println!("❌ No sender for session: {}", session_id);
+                            println!("No sender for session: {}", session_id);
                         }
                     } else {
-                        println!("❌ No session for user: {}", tid);
+                        println!("No session for user: {}", tid);
                     }
                 } else {
                     for sender in room.senders.values() {

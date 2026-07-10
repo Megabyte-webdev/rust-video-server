@@ -80,20 +80,20 @@ impl AttendanceService {
     }
 
     // ---------------- HEARTBEAT / ACTIVE ----------------
-    pub async fn mark_active(db: &PgPool, room_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
-        sqlx
-            ::query(
-                r#"
-            UPDATE meeting_attendance
-            SET
-                status = 'active'
-            WHERE room_id = $1 AND user_id = $2
-            "#
-            )
-            .bind(room_id)
-            .bind(user_id)
-            .execute(db).await?;
+    // pub async fn mark_active(db: &PgPool, room_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
+    //     sqlx
+    //         ::query(
+    //             r#"
+    //         UPDATE meeting_attendance
+    //         SET
+    //             status = 'active'
+    //         WHERE room_id = $1 AND user_id = $2
+    //         "#
+    //         )
+    //         .bind(room_id)
+    //         .bind(user_id)
+    //         .execute(db).await?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }

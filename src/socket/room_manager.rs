@@ -1,5 +1,5 @@
 use std::collections::{ HashMap, HashSet };
-use tokio::sync::{ RwLock, mpsc::UnboundedSender };
+use tokio::sync::{ RwLock };
 
 use axum::extract::ws::Message;
 
@@ -13,6 +13,8 @@ pub struct ParticipantState {
     pub is_host: bool,
     pub camera_stream_id: Option<String>,
     pub screen_share_stream_id: Option<String>,
+    pub mic_enabled: bool,
+    pub cam_enabled: bool,
 }
 
 #[derive(Clone)]

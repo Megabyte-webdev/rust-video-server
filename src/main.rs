@@ -1,6 +1,7 @@
+#![deny(clippy::all)]
+
 use axum::Router;
-use axum::http::HeaderValue;
-use axum::routing::{ get, post };
+use axum::routing::{ get };
 use dotenvy::dotenv;
 use tower_http::cors::{ CorsLayer, Any };
 use sqlx::postgres::PgPoolOptions;
@@ -9,13 +10,11 @@ mod routes;
 mod socket;
 mod state;
 mod auth;
-mod models;
 mod utils;
 mod services;
 
 use crate::routes::api_router_setup::create_api_router;
 use crate::{
-    routes::room::{ create_room, get_meeting },
     socket::handlers::cleanup::cleanup_stale_sessions,
     socket::ws_handler::socket_response,
     state::{ AppState, TurnConfig },
@@ -25,7 +24,7 @@ use crate::{
 async fn main() {
     dotenv().ok();
 
-    // ============ LOAD DATABASE ============
+    // LOAD DATABASE
     let db_url = std::env
         ::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must be set")
@@ -38,22 +37,22 @@ async fn main() {
 
     println!("Postgres connected");
 
-    // ============ LOAD TURN CONFIGURATION AT STARTUP ============
+    // LOAD TURN CONFIGURATION AT STARTUP
     let turn_config = TurnConfig::from_env().expect(
         "Failed to load TURN configuration. Please set TURN_SERVER and TURN_AUTH_SECRET environment variables."
     );
 
     println!("TURN Server configured: {}", turn_config.server);
 
-    // ============ KEEP-ALIVE PING ============
+    // KEEP-ALIVE PING
     if let Ok(url) = std::env::var("APP_URL") {
         tokio::spawn(start_keep_alive(url));
     }
 
-    // ============ INITIALIZE ROOMS STATE ============
+    // INITIALIZE ROOMS STATE
     let rooms = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
-    // ============ CREATE APP STATE ============
+    // CREATE APP STATE
     let state = AppState {
         rooms,
         db: db_pool,
@@ -62,9 +61,8 @@ async fn main() {
 
     {
         let cleanup_state = state.clone();
-
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
 
             loop {
                 interval.tick().await;
@@ -73,17 +71,17 @@ async fn main() {
         });
     }
 
-    // ============ CORS CONFIGURATION ============
+    // CORS CONFIGURATION
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
-    // ============ BUILD ROUTER ============
+    // BUILD ROUTER
     let app = Router::new()
         .route("/ws", get(socket_response))
         .nest("/api", create_api_router())
         .with_state(state)
         .layer(cors);
 
-    // ============ START SERVER ============
+    // START SERVER
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let addr_str = format!("0.0.0.0:{}", port);
 
@@ -91,7 +89,7 @@ async fn main() {
         ::bind(&addr_str).await
         .expect(&format!("Failed to bind to {}", addr_str));
 
-    println!("🚀 WebSocket server running on ws://{}", addr_str);
+    println!("WebSocket server running on ws://{}", addr_str);
 
     axum::serve(listener, app).await.expect("Server error");
 }

@@ -14,6 +14,19 @@ pub async fn handle_media_state(
         return;
     }
 
+    {
+        let mut rooms = state.rooms.write().await;
+        if let Some(room) = rooms.get_mut(room_id) {
+            if let Some(participant) = room.participants.get_mut(user_id) {
+                if kind == "audio" {
+                    participant.mic_enabled = enabled;
+                } else if kind == "video" {
+                    participant.cam_enabled = enabled;
+                }
+            }
+        }
+    }
+
     let rooms = state.rooms.read().await;
 
     let Some(room) = rooms.get(room_id) else {

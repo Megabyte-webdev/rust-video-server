@@ -59,6 +59,8 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let uid = value["user_id"].as_str().unwrap_or("").to_string();
                 name = value["sender_name"].as_str().unwrap_or("Anonymous").to_string();
                 let camera_stream_id = value["camera_stream_id"].as_str().map(|s| s.to_string());
+                let audio_muted = value["audio_muted"].as_bool();
+                let video_muted = value["video_muted"].as_bool();
 
                 println!("JOIN RECEIVED");
                 println!("   room_id = {:?}", rid);
@@ -124,7 +126,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         client.clone(),
                         session_id.as_ref().unwrap(),
                         host_id.clone(),
-                        camera_stream_id
+                        camera_stream_id,
+                        audio_muted, // NEW
+                        video_muted
                     ).await;
                 } else {
                     let request_id = uuid::Uuid::new_v4().to_string();

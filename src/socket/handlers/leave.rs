@@ -17,7 +17,7 @@ pub async fn handle_leave(
     println!("HANDLE_LEAVE CALLED for user {}", user_id);
 
     let mut recipients = vec![];
-    let mut still_connected = false;
+    let still_connected;
 
     // ---------------- MEMORY LOCK ----------------
     {

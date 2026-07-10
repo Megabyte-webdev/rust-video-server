@@ -1,8 +1,5 @@
-use std::f32::consts::E;
-
 use axum::{ Json, extract::{ Path, State }, http::StatusCode };
 
-use reqwest::Response;
 use serde::{ Deserialize, Serialize };
 
 use crate::{

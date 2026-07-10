@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use axum::extract::ws::Message;
 use serde_json::json;
-use sqlx::Row;
 use base64::{ engine::general_purpose::STANDARD, Engine };
 use hmac::{ Hmac, Mac, KeyInit };
 use sha1::Sha1;
@@ -22,9 +21,16 @@ pub async fn handle_join(
     tx: ClientSender,
     incoming_session_id: &str,
     host_id: Option<String>,
-    camera_stream_id: Option<String>
+    camera_stream_id: Option<String>,
+    audio_muted: Option<bool>,
+    video_muted: Option<bool>
 ) {
     println!("👤 JOIN STARTED: {} ({}) -> room {}", user_id, name, room_id);
+    println!(
+        "   Initial media state: audio_muted={}, video_muted={}",
+        audio_muted.unwrap_or(false),
+        video_muted.unwrap_or(false)
+    );
 
     // GENERATE TURN CREDENTIALS
     let expiration = Utc::now().timestamp() + 24 * 3600;
@@ -214,6 +220,8 @@ pub async fn handle_join(
             is_host: user_id == host_id.clone().unwrap_or_default(),
             camera_stream_id: camera_stream_id,
             screen_share_stream_id: None,
+            mic_enabled: !audio_muted.unwrap_or(false),
+            cam_enabled: !video_muted.unwrap_or(false),
         });
 
         room.senders.insert(session_id.clone(), tx.clone());
@@ -231,6 +239,8 @@ pub async fn handle_join(
                     "isHost": p.is_host,
                     "cameraId": p.camera_stream_id,
                     "isPresenter": p.is_presenter,
+                    "micEnabled": p.mic_enabled,
+                    "camEnabled": p.cam_enabled,
                 });
 
                 if let Some(pid) = &room.presenter_id {

@@ -493,8 +493,10 @@ pub async fn get_participant_detail(
 
 pub async fn get_live_participants(
     State(state): State<AppState>,
-    Path(room_id): Path<String>
+    Path(room_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>
 ) -> Json<serde_json::Value> {
+    let user_id = params.get("user_id");
     let rooms = state.rooms.read().await;
 
     let Some(room) = rooms.get(&room_id) else {
@@ -503,10 +505,17 @@ pub async fn get_live_participants(
             "room_id": room_id,
             "active": false,
             "count": 0,
+            "canJoin": false,
             "participants": []
         })
         );
     };
+
+    let is_host = user_id.map(|uid| room.host_id.as_deref() == Some(uid)).unwrap_or(false);
+
+    let is_approved = user_id.map(|uid| room.approved_users.contains(uid)).unwrap_or(false);
+
+    let can_join = room.is_open.unwrap_or(false) || is_host || is_approved;
 
     let participants: Vec<_> = room.participants
         .values()
@@ -527,6 +536,9 @@ pub async fn get_live_participants(
         "room_id": room_id,
         "active": !room.sessions.is_empty(),
         "count": participants.len(),
+        "isHost": is_host,
+        "approved": is_approved,
+        "canJoin": can_join,
         "participants": participants
     })
     )

@@ -55,7 +55,7 @@ pub async fn handle_leave(
             }
 
             // cleanup approved
-            room.approved_users.remove(user_id);
+            // room.approved_users.remove(user_id);
 
             if room.sessions.is_empty() {
                 println!("📭 Room {} empty, removing", room_id);

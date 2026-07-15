@@ -171,8 +171,6 @@ pub async fn handle_join(
 
     println!("Database transaction committed for user {}", user_id);
 
-    // FIX: Collect data from write lock, then release it
-    // This prevents deadlock by not holding write lock while acquiring read lock
     let (existing_participants, presenter_id, _, pending_reqs, is_host, session_id_to_use) = {
         let mut rooms = state.rooms.write().await;
 

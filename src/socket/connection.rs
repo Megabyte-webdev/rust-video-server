@@ -238,7 +238,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
 
                 println!("JOIN_APPROVE received for request: {}", request_id);
 
-                // ============ VERIFY REQUESTER IS HOST ============
+                // VERIFY REQUESTER IS HOST
                 {
                     let rooms = state.rooms.read().await;
 
@@ -379,7 +379,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
 
                 println!("JOIN_REJECT received for request: {}", request_id);
 
-                // ============ VERIFY REQUESTER IS HOST ============
+                // VERIFY REQUESTER IS HOST
                 {
                     let rooms = state.rooms.read().await;
 
@@ -430,7 +430,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                 }
-                // ============ END: HOST VERIFICATION ============
 
                 // Get request from memory
                 let (room_id_reject, user_id_reject, user_tx) = {
@@ -598,11 +597,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     for req_id in to_remove {
                         room.pending_requests.remove(&req_id);
                         println!("Removed pending request {} from memory", req_id);
-                    }
-
-                    // Remove from approved_users
-                    if room.approved_users.remove(uid) {
-                        println!("Removed user {} from approved_users", uid);
                     }
                 }
             }

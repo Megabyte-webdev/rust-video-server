@@ -37,7 +37,6 @@ pub async fn handle_leave(
 
             room.sessions.remove(session_id);
             room.senders.remove(session_id);
-            broadcast_room_presence(state, room_id).await;
 
             still_connected = room.sessions.values().any(|uid| uid == user_id);
             if !still_connected {
@@ -67,6 +66,8 @@ pub async fn handle_leave(
             return;
         }
     }
+
+    broadcast_room_presence(state, room_id).await;
 
     // ---------------- DB TRANSACTION ----------------
     let mut tx_db = match state.db.begin().await {

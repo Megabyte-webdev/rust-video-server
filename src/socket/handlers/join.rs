@@ -226,9 +226,6 @@ pub async fn handle_join(
             mic_enabled: !audio_muted.unwrap_or(false),
             cam_enabled: !video_muted.unwrap_or(false),
         });
-
-        broadcast_room_presence(state, room_id).await;
-
         room.senders.insert(session_id.clone(), tx.clone());
 
         // Build existing participants list
@@ -280,6 +277,7 @@ pub async fn handle_join(
     }; // ← WRITE LOCK RELEASED HERE
 
     println!("🔓 Released write lock after updating room state");
+    broadcast_room_presence(state, room_id).await;
 
     // BROADCAST JOIN TO OTHERS
     {

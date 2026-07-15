@@ -8,7 +8,11 @@ use chrono::Utc;
 
 use crate::{
     services::attendance_service::AttendanceService,
-    socket::{ events::log_join, room_manager::{ ClientSender, ParticipantState, Room } },
+    socket::{
+        events::log_join,
+        handlers::{ broadcast_presence::broadcast_room_presence },
+        room_manager::{ ClientSender, ParticipantState, Room },
+    },
     state::AppState,
     utils::error::error_msg,
 };
@@ -183,6 +187,7 @@ pub async fn handle_join(
             host_id: host_id.clone(),
             is_open: Some(false),
             pending_requests: HashMap::new(),
+            watchers: HashMap::new(),
             approved_users: std::collections::HashSet::new(),
         });
 
@@ -221,6 +226,8 @@ pub async fn handle_join(
             mic_enabled: !audio_muted.unwrap_or(false),
             cam_enabled: !video_muted.unwrap_or(false),
         });
+
+        broadcast_room_presence(state, room_id).await;
 
         room.senders.insert(session_id.clone(), tx.clone());
 

@@ -34,6 +34,7 @@ pub struct Room {
     pub participants: HashMap<String, ParticipantState>,
     pub sessions: HashMap<String, String>,
     pub senders: HashMap<String, ClientSender>,
+    pub watchers: HashMap<String, ClientSender>,
     pub presenter_id: Option<String>,
     pub host_id: Option<String>,
     pub is_open: Option<bool>,

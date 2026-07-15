@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::{
     services::attendance_service::AttendanceService,
-    socket::events::log_leave,
+    socket::{ events::log_leave, handlers::broadcast_presence::broadcast_room_presence },
     state::AppState,
 };
 
@@ -37,6 +37,7 @@ pub async fn handle_leave(
 
             room.sessions.remove(session_id);
             room.senders.remove(session_id);
+            broadcast_room_presence(state, room_id).await;
 
             still_connected = room.sessions.values().any(|uid| uid == user_id);
             if !still_connected {

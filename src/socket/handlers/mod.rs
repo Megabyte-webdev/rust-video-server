@@ -7,3 +7,5 @@ pub mod media_state;
 pub mod cleanup;
 pub mod room_close;
 pub mod watch;
+pub mod room_feed;
+pub mod broadcast_presence;

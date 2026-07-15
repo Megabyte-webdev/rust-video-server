@@ -490,3 +490,44 @@ pub async fn get_participant_detail(
         }
     }
 }
+
+pub async fn get_live_participants(
+    State(state): State<AppState>,
+    Path(room_id): Path<String>
+) -> Json<serde_json::Value> {
+    let rooms = state.rooms.read().await;
+
+    let Some(room) = rooms.get(&room_id) else {
+        return Json(
+            serde_json::json!({
+            "room_id": room_id,
+            "active": false,
+            "count": 0,
+            "participants": []
+        })
+        );
+    };
+
+    let participants: Vec<_> = room.participants
+        .values()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "name": p.name,
+                "isHost": p.is_host,
+                "isPresenter": p.is_presenter,
+                "micEnabled": p.mic_enabled,
+                "camEnabled": p.cam_enabled
+            })
+        })
+        .collect();
+
+    Json(
+        serde_json::json!({
+        "room_id": room_id,
+        "active": !room.sessions.is_empty(),
+        "count": participants.len(),
+        "participants": participants
+    })
+    )
+}

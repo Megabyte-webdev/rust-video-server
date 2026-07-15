@@ -4,6 +4,7 @@ use crate::{
     routes::{
         attendance_api::{
             get_attendance,
+            get_live_participants,
             get_participant_detail,
             get_participants,
             get_room_sessions,
@@ -25,4 +26,7 @@ pub fn create_api_router() -> Router<AppState> {
         .route("/rooms/{id}/participants", get(get_participants))
         .route("/rooms/{id}/sessions", get(get_room_sessions))
         .route("/rooms/{id}/participants/{user_id}", get(get_participant_detail))
+
+        //live meeting info
+        .route("/rooms/{id}/live", get(get_live_participants))
 }

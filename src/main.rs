@@ -14,6 +14,7 @@ mod utils;
 mod services;
 
 use crate::routes::api_router_setup::create_api_router;
+use crate::socket::ws_watch_handler::handle_watch_socket;
 use crate::{
     socket::handlers::cleanup::cleanup_stale_sessions,
     socket::ws_handler::socket_response,
@@ -77,6 +78,7 @@ async fn main() {
     // BUILD ROUTER
     let app = Router::new()
         .route("/ws", get(socket_response))
+        .route("/ws/watch/{room_id}", get(handle_watch_socket))
         .nest("/api", create_api_router())
         .with_state(state)
         .layer(cors);

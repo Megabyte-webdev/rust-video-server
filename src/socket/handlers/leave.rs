@@ -19,7 +19,7 @@ pub async fn handle_leave(
     let mut recipients = vec![];
     let still_connected;
 
-    // ---------------- MEMORY LOCK ----------------
+    // MEMORY LOCK
     {
         let mut rooms = state.rooms.write().await;
 
@@ -69,7 +69,7 @@ pub async fn handle_leave(
 
     broadcast_room_presence(state, room_id).await;
 
-    // ---------------- DB TRANSACTION ----------------
+    // DB TRANSACTION
     let mut tx_db = match state.db.begin().await {
         Ok(t) => t,
         Err(_) => {

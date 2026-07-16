@@ -14,7 +14,6 @@ use crate::{
             message::handle_message,
             screen_share::handle_screen_share,
             signaling::handle_signaling,
-            watch::handle_watch_room,
         },
         room_manager::ClientSender,
     },
@@ -575,11 +574,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     user_id = None;
                 }
                 break; // Break the socket loop
-            }
-            "WATCH_ROOM" => {
-                if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
-                    handle_watch_room(&state, rid, uid, client.clone()).await;
-                }
             }
 
             _ => (),

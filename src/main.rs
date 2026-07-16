@@ -1,8 +1,12 @@
 #![deny(clippy::all)]
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use axum::Router;
 use axum::routing::{ get };
 use dotenvy::dotenv;
+use tokio::sync::RwLock;
 use tower_http::cors::{ CorsLayer, Any };
 use sqlx::postgres::PgPoolOptions;
 
@@ -51,13 +55,14 @@ async fn main() {
     }
 
     // INITIALIZE ROOMS STATE
-    let rooms = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
-
+    let rooms = Arc::new(RwLock::new(std::collections::HashMap::new()));
+    let watchers = Arc::new(RwLock::new(HashMap::new()));
     // CREATE APP STATE
     let state = AppState {
         rooms,
         db: db_pool,
         turn_config,
+        watchers,
     };
 
     {

@@ -73,30 +73,27 @@ pub async fn register_room_watcher(
     client: ClientSender
 ) {
     {
-        let mut rooms = state.rooms.write().await;
+        let mut watchers = state.watchers.write().await;
 
-        let Some(room) = rooms.get_mut(room_id) else {
-            return;
-        };
-
-        room.watchers.insert(user_id.to_string(), client);
+        watchers.entry(room_id.to_string()).or_default().insert(user_id.to_string(), client);
     }
 
-    // notify all watchers about new presence
+    // If the room already exists, send an update.
     broadcast_room_presence(state, room_id).await;
 }
 
 pub async fn unregister_room_watcher(state: &AppState, room_id: &str, user_id: &str) {
-    {
-        let mut rooms = state.rooms.write().await;
-
-        let Some(room) = rooms.get_mut(room_id) else {
+    let should_remove_room = {
+        let mut watchers = state.watchers.write().await;
+        let Some(room_watchers) = watchers.get_mut(room_id) else {
             return;
         };
+        room_watchers.remove(user_id);
+        room_watchers.is_empty()
+    };
 
-        room.watchers.remove(user_id);
+    if should_remove_room {
+        let mut watchers = state.watchers.write().await;
+        watchers.remove(room_id);
     }
-
-    // notify remaining watchers
-    broadcast_room_presence(state, room_id).await;
 }

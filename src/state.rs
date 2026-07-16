@@ -1,5 +1,8 @@
+use std::{ collections::HashMap, sync::{ Arc } };
+
 use sqlx::PgPool;
-use crate::socket::room_manager::Rooms;
+use tokio::sync::RwLock;
+use crate::socket::room_manager::{ ClientSender, Rooms };
 
 // ============ TURN CONFIGURATION ============
 #[derive(Clone, Debug)]
@@ -21,9 +24,12 @@ impl TurnConfig {
     }
 }
 
+pub type RoomWatchers = Arc<RwLock<HashMap<String, HashMap<String, ClientSender>>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub rooms: Rooms,
     pub db: PgPool,
     pub turn_config: TurnConfig,
+    pub watchers: RoomWatchers,
 }

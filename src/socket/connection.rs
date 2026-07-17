@@ -144,7 +144,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                 participants: HashMap::new(),
                                 sessions: HashMap::new(),
                                 senders: HashMap::new(),
-                                watchers: HashMap::new(),
                                 presenter_id: None,
                                 host_id: host_id.clone(),
                                 is_open: Some(false),

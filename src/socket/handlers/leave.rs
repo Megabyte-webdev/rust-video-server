@@ -18,7 +18,6 @@ pub async fn handle_leave(
 
     let mut recipients = vec![];
     let still_connected;
-    broadcast_room_presence(state, room_id).await;
     // MEMORY LOCK
     {
         let mut rooms = state.rooms.write().await;
@@ -154,5 +153,7 @@ pub async fn handle_leave(
         );
     }
 
+    
+    broadcast_room_presence(state, room_id).await;
     println!("LEAVE COMPLETE for user {}", user_id);
 }

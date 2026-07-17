@@ -12,13 +12,33 @@ pub async fn build_room_presence(
     user_id: &str
 ) -> Option<Message> {
     let rooms = state.rooms.read().await;
-    let room = rooms.get(room_id)?;
+    let Some(room) = rooms.get(room_id) else {
+        return Some(
+            Message::Text(
+                json!({
+                    "type": "ROOM_PRESENCE_UPDATE",
+                    "room_id": room_id,
+                    "active": false,
+                    "count": 0,
+                    "participants": [],
+                    "hasMoreParticipants": false,
+                    "isHost": false,
+                    "approved": false,
+                    "canJoin": false
+                })
+                    .to_string()
+                    .into()
+            )
+        );
+    };
+
     let is_host = room.host_id.as_deref() == Some(user_id);
     let approved = room.approved_users.contains(user_id);
+
     let can_join = room.is_open.unwrap_or(false) || is_host || approved;
+
     let total_count = room.participants.len();
 
-    // only send max 5 participants
     let participants = room.participants
         .values()
         .take(5)
@@ -26,14 +46,10 @@ pub async fn build_room_presence(
             json!({
                     "id": p.id,
                     "name": p.name,
-                    "isHost":
-                        p.is_host,
-                    "isPresenter":
-                        p.is_presenter,
-                    "micEnabled":
-                        p.mic_enabled,
-                    "camEnabled":
-                        p.cam_enabled
+                    "isHost": p.is_host,
+                    "isPresenter": p.is_presenter,
+                    "micEnabled": p.mic_enabled,
+                    "camEnabled": p.cam_enabled
                 })
         })
         .collect::<Vec<_>>();
@@ -41,24 +57,15 @@ pub async fn build_room_presence(
     Some(
         Message::Text(
             json!({
-                "type":
-                    "ROOM_PRESENCE_UPDATE",
-                "room_id":
-                    room_id,
-                "active":
-                    !room.sessions.is_empty(),
-                "count":
-                    total_count,
-                "participants":
-                    participants,
-                "hasMoreParticipants":
-                    total_count > 5,
-                "isHost":
-                    is_host,
-                "approved":
-                    approved,
-                "canJoin":
-                    can_join
+                "type": "ROOM_PRESENCE_UPDATE",
+                "room_id":room_id,
+                "active":!room.sessions.is_empty(),
+                "count": total_count,
+                "participants": participants,
+                "hasMoreParticipants": total_count > 5,
+                "isHost":is_host,
+                "approved":  approved,
+                "canJoin": can_join
             })
                 .to_string()
                 .into()
@@ -74,7 +81,6 @@ pub async fn register_room_watcher(
 ) {
     {
         let mut watchers = state.watchers.write().await;
-
         watchers.entry(room_id.to_string()).or_default().insert(user_id.to_string(), client);
     }
 

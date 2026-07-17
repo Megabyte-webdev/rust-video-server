@@ -187,7 +187,6 @@ pub async fn handle_join(
             host_id: host_id.clone(),
             is_open: Some(false),
             pending_requests: HashMap::new(),
-            watchers: HashMap::new(),
             approved_users: std::collections::HashSet::new(),
         });
 

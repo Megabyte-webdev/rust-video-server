@@ -65,6 +65,17 @@ pub async fn handle_leave(
             return;
         }
     }
+    // Clean up WebRTC peer connection and forwarders
+    state.track_repository.remove_sender_forwarders(room_id, user_id).await;
+    {
+        let mut rooms = state.rooms.write().await;
+        if let Some(room) = rooms.get_mut(room_id) {
+            if let Some(server_peer) = room.server_peers.remove(user_id) {
+                let _ = server_peer.pc.close().await;
+            }
+            room.published_tracks.remove(user_id);
+        }
+    }
 
     // DB TRANSACTION
     let mut tx_db = match state.db.begin().await {
@@ -153,7 +164,6 @@ pub async fn handle_leave(
         );
     }
 
-    
     broadcast_room_presence(state, room_id).await;
     println!("LEAVE COMPLETE for user {}", user_id);
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{ collections::HashMap, sync::Arc };
 use axum::extract::ws::Message;
 use serde_json::json;
 use base64::{ engine::general_purpose::STANDARD, Engine };
@@ -7,11 +7,11 @@ use sha1::Sha1;
 use chrono::Utc;
 
 use crate::{
-    services::attendance_service::AttendanceService,
+    services::{ attendance_service::AttendanceService, webrtc_util::create_server_peer_connection },
     socket::{
         events::log_join,
-        handlers::{ broadcast_presence::broadcast_room_presence },
-        room_manager::{ ClientSender, ParticipantState, Room },
+        handlers::broadcast_presence::broadcast_room_presence,
+        room_manager::{ ClientSender, ParticipantState, Room, ServerPeer },
     },
     state::AppState,
     utils::error::error_msg,
@@ -188,6 +188,8 @@ pub async fn handle_join(
             is_open: Some(false),
             pending_requests: HashMap::new(),
             approved_users: std::collections::HashSet::new(),
+            server_peers: HashMap::new(),
+            published_tracks: HashMap::new(),
         });
 
         // Ensure host_id is set from authoritative source
@@ -226,6 +228,13 @@ pub async fn handle_join(
             cam_enabled: !video_muted.unwrap_or(false),
         });
         room.senders.insert(session_id.clone(), tx.clone());
+
+        let pc = create_server_peer_connection(state.clone(), room_id.to_string(), user_id).await;
+
+        room.server_peers.insert(user_id.to_string(), ServerPeer {
+            user_id: user_id.to_string(),
+            pc,
+        });
 
         // Build existing participants list
         let existing: Vec<_> = room.participants
@@ -396,6 +405,44 @@ pub async fn handle_join(
         )
     {
         eprintln!("Failed to send existing users list: {:?}", e);
+    }
+
+    // Cross-subscribe new joiner to existing tracks
+    let (new_pc, existing_tracks) = {
+        let rooms = state.rooms.read().await;
+        if let Some(room) = rooms.get(room_id) {
+            let pc = room.server_peers.get(user_id).map(|sp| sp.pc.clone());
+            let tracks: Vec<
+                (String, Arc<webrtc::track::track_remote::TrackRemote>)
+            > = room.published_tracks
+                .iter()
+                .filter(|(uid, _)| *uid != user_id)
+                .flat_map(|(uid, trs)| trs.iter().map(move |t| (uid.clone(), Arc::clone(t))))
+                .collect();
+            (pc, tracks)
+        } else {
+            (None, vec![])
+        }
+    };
+
+    if let Some(ref pc) = new_pc {
+        for (publisher_id, track) in existing_tracks {
+            if
+                let Err(err) = state.track_repository.add_forwarder(
+                    room_id,
+                    &publisher_id,
+                    pc.clone(),
+                    track // Pass Arc<TrackRemote> directly
+                ).await
+            {
+                log::error!(
+                    "Failed to subscribe joiner {} to track from {}: {:?}",
+                    user_id,
+                    publisher_id,
+                    err
+                );
+            }
+        }
     }
 
     println!("JOIN COMPLETE for user {} in room {}", user_id, room_id);

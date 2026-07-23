@@ -150,6 +150,8 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                 pending_requests: HashMap::new(),
                                 approved_users: std::collections::HashSet::new(),
                                 presenter_stream_id: None,
+                                server_peers: HashMap::new(),
+                                published_tracks: HashMap::new(),
                             });
 
                         // Add to pending requests with tx included
@@ -557,7 +559,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             }
 
-            "OFFER" | "ANSWER" | "ICE" => {
+            "PUB_OFFER" | "SUB_ANSWER" | "PUB_ICE" | "SUB_ICE" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     handle_signaling(&state, rid, uid, &txt).await;
                 }

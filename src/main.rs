@@ -18,7 +18,9 @@ mod utils;
 mod services;
 
 use crate::routes::api_router_setup::create_api_router;
+use crate::socket::handlers::rtc_signalling::SFUConfig;
 use crate::socket::ws_watch_handler::handle_watch_socket;
+use crate::state::TrackRepository;
 use crate::{
     socket::handlers::cleanup::cleanup_stale_sessions,
     socket::ws_handler::socket_response,
@@ -53,19 +55,23 @@ async fn main() {
     if let Ok(url) = std::env::var("APP_URL") {
         tokio::spawn(start_keep_alive(url));
     }
+    println!("WebRTC API initialized");
 
     // INITIALIZE ROOMS STATE
     let rooms = Arc::new(RwLock::new(std::collections::HashMap::new()));
     let watchers = Arc::new(RwLock::new(HashMap::new()));
+    let track_repository = Arc::new(TrackRepository::new(SFUConfig::default().forwarder_config));
     // CREATE APP STATE
     let state = AppState {
         rooms,
         db: db_pool,
         turn_config,
         watchers,
+        track_repository,
     };
 
     {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
         let cleanup_state = state.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));

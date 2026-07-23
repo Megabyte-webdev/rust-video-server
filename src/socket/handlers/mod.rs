@@ -8,3 +8,4 @@ pub mod cleanup;
 pub mod room_close;
 pub mod room_feed;
 pub mod broadcast_presence;
+pub mod rtc_signalling;

@@ -9,12 +9,23 @@ use webrtc::track::track_remote::TrackRemote;
 #[derive(Clone)]
 pub struct ServerPeer {
     pub user_id: String,
-    pub pc: Arc<RTCPeerConnection>,
+    pub publisher_pc: Arc<RTCPeerConnection>,
+
+    // SFU -> Client
+    pub subscriber_pc: Arc<RTCPeerConnection>,
 }
 
 impl ServerPeer {
-    pub fn new(pc: Arc<RTCPeerConnection>, user_id: String) -> Self {
-        Self { pc, user_id }
+    pub fn new(
+        user_id: String,
+        publisher_pc: Arc<RTCPeerConnection>,
+        subscriber_pc: Arc<RTCPeerConnection>
+    ) -> Self {
+        Self {
+            user_id,
+            publisher_pc,
+            subscriber_pc,
+        }
     }
 }
 
@@ -26,8 +37,6 @@ pub struct ParticipantState {
     pub last_seen: u64,
     pub is_presenter: bool,
     pub is_host: bool,
-    pub camera_stream_id: Option<String>,
-    pub screen_share_stream_id: Option<String>,
     pub mic_enabled: bool,
     pub cam_enabled: bool,
 }
@@ -64,7 +73,6 @@ pub struct Room {
     pub is_open: Option<bool>,
     pub pending_requests: HashMap<String, JoinRequest>,
     pub approved_users: HashSet<String>,
-    pub presenter_stream_id: Option<String>,
     pub server_peers: HashMap<String, ServerPeer>,
     pub published_tracks: HashMap<String, Vec<Arc<TrackRemote>>>,
 }

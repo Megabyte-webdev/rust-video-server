@@ -66,12 +66,20 @@ pub async fn handle_leave(
         }
     }
     // Clean up WebRTC peer connection and forwarders
-    state.track_repository.remove_sender_forwarders(room_id, user_id).await;
+    state.track_repository.remove_publisher_forwarders(room_id, user_id).await;
+
+    state.track_repository.remove_subscriber_forwarders(room_id, user_id).await;
     {
         let mut rooms = state.rooms.write().await;
         if let Some(room) = rooms.get_mut(room_id) {
             if let Some(server_peer) = room.server_peers.remove(user_id) {
-                let _ = server_peer.pc.close().await;
+                if let Err(e) = server_peer.publisher_pc.close().await {
+                    log::error!("Failed closing publisher pc for {}: {:?}", user_id, e);
+                }
+
+                if let Err(e) = server_peer.subscriber_pc.close().await {
+                    log::error!("Failed closing subscriber pc for {}: {:?}", user_id, e);
+                }
             }
             room.published_tracks.remove(user_id);
         }

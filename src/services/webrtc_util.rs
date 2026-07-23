@@ -7,7 +7,7 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::RTCPeerConnection;
 
-use crate::state::AppState;
+use crate::state::{ AppState, TrackSource };
 
 pub async fn create_webrtc_api() -> Result<Arc<webrtc::api::API>, Box<dyn std::error::Error>> {
     // In webrtc 0.17.1, SettingEngine is private and embedded in APIBuilder
@@ -15,10 +15,12 @@ pub async fn create_webrtc_api() -> Result<Arc<webrtc::api::API>, Box<dyn std::e
     let api = APIBuilder::new().build();
     Ok(Arc::new(api))
 }
+
 pub async fn create_server_peer_connection(
     state: AppState,
     room_id: String,
-    user_id: &str
+    user_id: &str,
+    is_publisher: bool
 ) -> Arc<RTCPeerConnection> {
     let mut media_engine = MediaEngine::default();
     media_engine.register_default_codecs().expect("Failed to register default codecs");
@@ -49,67 +51,81 @@ pub async fn create_server_peer_connection(
     let pc = Arc::new(
         api.new_peer_connection(config).await.expect("Failed to create PeerConnection")
     );
+    if is_publisher {
+        let state_clone = state.clone();
+        let room_id_clone = room_id.clone();
+        let user_id_clone = user_id.to_string();
 
-    let state_clone = state.clone();
-    let room_id_clone = room_id.clone();
-    let user_id_clone = user_id.to_string();
+        pc.on_track(
+            Box::new(move |track, _receiver, _transceiver| {
+                let state = state_clone.clone();
+                let room_id = room_id_clone.clone();
+                let user_id = user_id_clone.clone();
 
-    // Register incoming media track listener
-    pc.on_track(
-        Box::new(move |track, _receiver, _transceiver| {
-            let state = state_clone.clone();
-            let room_id = room_id_clone.clone();
-            let user_id = user_id_clone.clone();
+                Box::pin(async move {
+                    let remote_track = track.clone();
 
-            Box::pin(async move {
-                let remote_track = track.clone();
-                log::info!(
-                    "Received remote track {} ({}) from user {}",
-                    remote_track.id(),
-                    remote_track.kind(),
-                    user_id
-                );
+                    let source = match remote_track.kind().to_string().as_str() {
+                        "audio" => TrackSource::Audio,
 
-                // 1. Store track in room's published tracks
-                {
-                    let mut rooms = state.rooms.write().await;
-                    if let Some(room) = rooms.get_mut(&room_id) {
-                        room.published_tracks
-                            .entry(user_id.clone())
-                            .or_default()
-                            .push(remote_track.clone());
-                    }
-                }
+                        "video" => {
+                            let stream_id = remote_track.stream_id();
 
-                // 2. Attach track to all existing subscriber peers in the room
-                let subscriber_pcs: Vec<(String, Arc<RTCPeerConnection>)> = {
-                    let rooms = state.rooms.read().await;
-                    if let Some(room) = rooms.get(&room_id) {
-                        room.server_peers
-                            .iter()
-                            .filter(|(uid, _)| **uid != user_id)
-                            .map(|(uid, peer)| (uid.clone(), peer.pc.clone()))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
-                };
+                            log::info!("Video track {} stream {}", remote_track.id(), stream_id);
 
-                for (sub_id, sub_pc) in subscriber_pcs {
-                    if
-                        let Err(err) = state.track_repository.add_forwarder(
-                            &room_id,
-                            &user_id,
-                            sub_pc,
-                            remote_track.clone()
-                        ).await
+                            if stream_id.contains("screen") {
+                                TrackSource::Screen
+                            } else {
+                                TrackSource::Camera
+                            }
+                        }
+
+                        _ => TrackSource::Camera,
+                    };
+
                     {
-                        log::error!("Failed to forward track to subscriber {}: {:?}", sub_id, err);
-                    }
-                }
-            })
-        })
-    );
+                        let mut rooms = state.rooms.write().await;
 
+                        if let Some(room) = rooms.get_mut(&room_id) {
+                            room.published_tracks
+                                .entry(user_id.clone())
+                                .or_default()
+                                .push(remote_track.clone());
+                        }
+                    }
+
+                    let subscriber_pcs = {
+                        let rooms = state.rooms.read().await;
+
+                        if let Some(room) = rooms.get(&room_id) {
+                            room.server_peers
+                                .iter()
+                                .filter(|(uid, _)| **uid != user_id)
+                                .map(|(uid, peer)| { (uid.clone(), peer.subscriber_pc.clone()) })
+                                .collect::<Vec<_>>()
+                        } else {
+                            vec![]
+                        }
+                    };
+
+                    for (subscriber_id, subscriber_pc) in subscriber_pcs {
+                        if
+                            let Err(err) = state.track_repository.add_forwarder(
+                                &state,
+                                &room_id,
+                                &user_id,
+                                &subscriber_id,
+                                subscriber_pc,
+                                source.clone(),
+                                remote_track.clone()
+                            ).await
+                        {
+                            log::error!("Forwarding failed to {}: {:?}", subscriber_id, err);
+                        }
+                    }
+                })
+            })
+        );
+    }
     pc
 }

@@ -13,7 +13,7 @@ use crate::{
         handlers::broadcast_presence::broadcast_room_presence,
         room_manager::{ ClientSender, ParticipantState, Room, ServerPeer },
     },
-    state::AppState,
+    state::{ AppState, TrackSource },
     utils::error::error_msg,
 };
 
@@ -25,7 +25,6 @@ pub async fn handle_join(
     tx: ClientSender,
     incoming_session_id: &str,
     host_id: Option<String>,
-    camera_stream_id: Option<String>,
     audio_muted: Option<bool>,
     video_muted: Option<bool>
 ) {
@@ -175,7 +174,21 @@ pub async fn handle_join(
 
     println!("Database transaction committed for user {}", user_id);
 
-    let (existing_participants, presenter_id, _, pending_reqs, is_host, session_id_to_use) = {
+    let publisher_pc = create_server_peer_connection(
+        state.clone(),
+        room_id.to_string(),
+        user_id,
+        true
+    ).await;
+
+    let subscriber_pc = create_server_peer_connection(
+        state.clone(),
+        room_id.to_string(),
+        user_id,
+        false
+    ).await;
+
+    let (existing_participants, presenter_id, pending_reqs, is_host, session_id_to_use) = {
         let mut rooms = state.rooms.write().await;
 
         let room = rooms.entry(room_id.to_string()).or_insert(Room {
@@ -183,7 +196,6 @@ pub async fn handle_join(
             sessions: HashMap::new(),
             senders: HashMap::new(),
             presenter_id: None,
-            presenter_stream_id: None,
             host_id: host_id.clone(),
             is_open: Some(false),
             pending_requests: HashMap::new(),
@@ -222,20 +234,16 @@ pub async fn handle_join(
             last_seen: chrono::Utc::now().timestamp() as u64,
             is_presenter: false,
             is_host: user_id == host_id.clone().unwrap_or_default(),
-            camera_stream_id: camera_stream_id,
-            screen_share_stream_id: None,
             mic_enabled: !audio_muted.unwrap_or(false),
             cam_enabled: !video_muted.unwrap_or(false),
         });
         room.senders.insert(session_id.clone(), tx.clone());
 
-        let pc = create_server_peer_connection(state.clone(), room_id.to_string(), user_id).await;
-
         room.server_peers.insert(user_id.to_string(), ServerPeer {
             user_id: user_id.to_string(),
-            pc,
+            publisher_pc,
+            subscriber_pc,
         });
-
         // Build existing participants list
         let existing: Vec<_> = room.participants
             .values()
@@ -247,7 +255,6 @@ pub async fn handle_join(
                     "name": p.name,
                     "session_id": p.session_id,
                     "isHost": p.is_host,
-                    "cameraId": p.camera_stream_id,
                     "isPresenter": p.is_presenter,
                     "micEnabled": p.mic_enabled,
                     "camEnabled": p.cam_enabled,
@@ -255,10 +262,7 @@ pub async fn handle_join(
 
                 if let Some(pid) = &room.presenter_id {
                     if pid == &p.id {
-                        if let Some(stream_id) = room.presenter_stream_id.as_ref() {
-                            participant_json["isScreenSharing"] = json!(true);
-                            participant_json["remoteScreenStreamId"] = json!(stream_id);
-                        }
+                        participant_json["isScreenSharing"] = json!(true);
                     }
                 }
 
@@ -274,14 +278,7 @@ pub async fn handle_join(
         };
 
         // Collect everything we need while holding the lock
-        (
-            existing,
-            room.presenter_id.clone(),
-            room.presenter_stream_id.clone(),
-            pending_requests_list,
-            is_host_flag,
-            session_id,
-        )
+        (existing, room.presenter_id.clone(), pending_requests_list, is_host_flag, session_id)
     }; // ← WRITE LOCK RELEASED HERE
 
     println!("🔓 Released write lock after updating room state");
@@ -411,7 +408,7 @@ pub async fn handle_join(
     let (new_pc, existing_tracks) = {
         let rooms = state.rooms.read().await;
         if let Some(room) = rooms.get(room_id) {
-            let pc = room.server_peers.get(user_id).map(|sp| sp.pc.clone());
+            let pc = room.server_peers.get(user_id).map(|sp| sp.subscriber_pc.clone());
             let tracks: Vec<
                 (String, Arc<webrtc::track::track_remote::TrackRemote>)
             > = room.published_tracks
@@ -429,10 +426,13 @@ pub async fn handle_join(
         for (publisher_id, track) in existing_tracks {
             if
                 let Err(err) = state.track_repository.add_forwarder(
+                    &state,
                     room_id,
                     &publisher_id,
+                    user_id,
                     pc.clone(),
-                    track // Pass Arc<TrackRemote> directly
+                    TrackSource::Audio,
+                    track
                 ).await
             {
                 log::error!(

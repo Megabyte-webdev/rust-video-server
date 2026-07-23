@@ -1,5 +1,7 @@
 use std::{ collections::HashMap, sync::{ Arc } };
 
+use axum::extract::ws::Message;
+use serde::Serialize;
 use serde_json::json;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
@@ -14,6 +16,12 @@ use crate::socket::{
     room_manager::{ ClientSender, Rooms },
 };
 
+#[derive(Clone, Debug, Serialize)]
+pub enum TrackSource {
+    Camera,
+    Screen,
+    Audio,
+}
 // ============ TURN CONFIGURATION ============
 #[derive(Clone, Debug)]
 pub struct TurnConfig {
@@ -40,7 +48,7 @@ pub type RoomWatchers = Arc<RwLock<HashMap<String, HashMap<String, ClientSender>
 #[derive(Clone)]
 pub struct TrackRepository {
     /// Map: (room_id, sender_id) → Vec<Forwarder>
-    forwarders: Arc<RwLock<HashMap<(String, String), Vec<Arc<TrackForwarder>>>>>,
+    forwarders: Arc<RwLock<HashMap<(String, String, String), Arc<TrackForwarder>>>>,
     config: ForwarderConfig,
 }
 
@@ -55,87 +63,132 @@ impl TrackRepository {
     /// Add a forwarder for a specific room/sender/recipient combination
     pub async fn add_forwarder(
         &self,
+        state: &AppState,
         room_id: &str,
         sender_id: &str,
+        subscriber_id: &str,
         recipient_pc: Arc<RTCPeerConnection>,
+        source: TrackSource,
         remote_track: Arc<TrackRemote>
     ) -> SFUResult<Arc<TrackForwarder>> {
         let track_kind = remote_track.kind().to_string();
 
-        // Create codec capability
         let codec = match track_kind.as_str() {
             "audio" =>
                 RTCRtpCodecCapability {
-                    mime_type: "audio/opus".to_string(),
+                    mime_type: "audio/opus".into(),
                     clock_rate: 48000,
                     channels: 2,
-                    sdp_fmtp_line: String::new(),
+                    sdp_fmtp_line: "".into(),
                     rtcp_feedback: vec![],
                 },
+
             "video" =>
                 RTCRtpCodecCapability {
-                    mime_type: "video/VP8".to_string(),
+                    mime_type: "video/VP8".into(),
                     clock_rate: 90000,
                     channels: 0,
-                    sdp_fmtp_line: String::new(),
+                    sdp_fmtp_line: "".into(),
                     rtcp_feedback: vec![],
                 },
+
             _ => {
-                return Err(SFUError::CodecMismatch(format!("Unknown track kind: {}", track_kind)));
+                return Err(SFUError::CodecMismatch(format!("Unsupported {}", track_kind)));
             }
         };
 
-        // Create local forwarding track with correct signature
-        let track_id = format!("fwd-{}-{}", sender_id, Uuid::new_v4());
-        let stream_id = format!("stream-{}", Uuid::new_v4());
-
-        let local_track = Arc::new(TrackLocalStaticRTP::new(codec, track_id, stream_id));
-
-        // Add to peer connection
-        recipient_pc
-            .add_track(local_track.clone()).await
-            .map_err(|e| SFUError::TrackForwardingFailed(format!("Failed to add track: {}", e)))?;
-
-        log::info!(
-            "✅ Added forwarding track for {} → {} ({})",
-            sender_id,
-            Uuid::new_v4(),
-            track_kind
+        let local_track = Arc::new(
+            TrackLocalStaticRTP::new(
+                codec,
+                format!("forward-{}", Uuid::new_v4()),
+                format!("stream-{}", Uuid::new_v4())
+            )
         );
 
-        // Create forwarder
+        recipient_pc
+            .add_track(local_track.clone()).await
+            .map_err(|e| SFUError::TrackForwardingFailed(e.to_string()))?;
+
+        /*
+        IMPORTANT
+
+        Adding a track requires renegotiation.
+    */
+
+        let offer = recipient_pc
+            .create_offer(None).await
+            .map_err(|e| SFUError::ConnectionError(e.to_string()))?;
+
+        recipient_pc
+            .set_local_description(offer.clone()).await
+            .map_err(|e| SFUError::ConnectionError(e.to_string()))?;
+
+        let msg = Message::Text(
+            json!({
+                "type":"SUB_OFFER",
+                "payload":offer.sdp,
+                "publisher_id":sender_id,
+                 "source": source
+            })
+                .to_string()
+                .into()
+        );
+
+        Self::send_to_user(state, room_id, subscriber_id, msg).await;
+
         let forwarder = Arc::new(
             TrackForwarder::new(
                 local_track,
                 remote_track,
                 sender_id.to_string(),
+                subscriber_id.to_string(),
                 self.config.clone()
             )
         );
 
-        // Start forwarding
         forwarder.start().await?;
 
-        // Store forwarder
-        let key = (room_id.to_string(), sender_id.to_string());
-        self.forwarders.write().await.entry(key).or_insert_with(Vec::new).push(forwarder.clone());
+        self.forwarders
+            .write().await
+            .insert(
+                (room_id.to_string(), sender_id.to_string(), subscriber_id.to_string()),
+                forwarder.clone()
+            );
 
         Ok(forwarder)
     }
 
     /// Remove all forwarders for a sender
-    pub async fn remove_sender_forwarders(&self, room_id: &str, sender_id: &str) {
-        let key = (room_id.to_string(), sender_id.to_string());
+    pub async fn remove_publisher_forwarders(&self, room_id: &str, publisher_id: &str) {
+        let mut forwarders = self.forwarders.write().await;
 
-        if let Some(forwarders) = self.forwarders.write().await.remove(&key) {
-            log::info!(
-                "Removing {} forwarders for {} in room {}",
-                forwarders.len(),
-                sender_id,
-                room_id
-            );
+        let keys: Vec<_> = forwarders
+            .keys()
+            .filter(|(rid, pid, _)| { rid == room_id && pid == publisher_id })
+            .cloned()
+            .collect();
 
-            for forwarder in forwarders {
+        for key in keys {
+            if let Some(forwarder) = forwarders.remove(&key) {
+                log::info!("Removing publisher forwarder {} -> {}", key.1, key.2);
+
+                forwarder.stop().await;
+            }
+        }
+    }
+    pub async fn remove_subscriber_forwarders(&self, room_id: &str, subscriber_id: &str) {
+        let mut forwarders = self.forwarders.write().await;
+
+        let keys: Vec<_> = forwarders
+            .keys()
+            .filter(|(rid, _, sid)| { rid == room_id && sid == subscriber_id })
+            .cloned()
+            .collect();
+
+        for key in keys {
+            if let Some(forwarder) = forwarders.remove(&key) {
+                log::info!("Removing subscriber forwarder {} -> {}", key.1, key.2);
+
                 forwarder.stop().await;
             }
         }
@@ -146,23 +199,33 @@ impl TrackRepository {
         let forwarders = self.forwarders.read().await;
         let mut metrics = Vec::new();
 
-        for ((room_id, sender_id), forwarder_list) in forwarders.iter() {
-            for (idx, forwarder) in forwarder_list.iter().enumerate() {
-                metrics.push(
-                    json!({
+        for ((room_id, publisher_id, subscriber_id), forwarder) in forwarders.iter() {
+            metrics.push(
+                json!({
                     "room_id": room_id,
-                    "sender_id": sender_id,
-                    "forwarder_index": idx,
+                    "publisher_id": publisher_id,
+                    "subscriber_id": subscriber_id,
                     "stats": forwarder.metrics()
-                })
-                );
-            }
+        })
+            );
         }
 
         json!({
             "total_forwarders": metrics.len(),
             "forwarders": metrics
         })
+    }
+
+    async fn send_to_user(state: &AppState, room_id: &str, user_id: &str, message: Message) {
+        let rooms = state.rooms.read().await;
+
+        if let Some(room) = rooms.get(room_id) {
+            if let Some((sid, _)) = room.sessions.iter().find(|(_, uid)| uid.as_str() == user_id) {
+                if let Some(sender) = room.senders.get(sid) {
+                    let _ = sender.send(message);
+                }
+            }
+        }
     }
 }
 

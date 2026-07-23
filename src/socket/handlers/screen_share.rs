@@ -4,14 +4,7 @@ use serde_json::json;
 use crate::state::AppState;
 
 /// Broadcast screen share events to all participants in a room
-pub async fn handle_screen_share(
-    state: &AppState,
-    room_id: &str,
-    user_id: &str,
-    is_start: bool,
-    stream_id: Option<&str>,
-    camera_id: Option<&str>
-) {
+pub async fn handle_screen_share(state: &AppState, room_id: &str, user_id: &str, is_start: bool) {
     let mut rooms = state.rooms.write().await;
     let Some(room) = rooms.get_mut(room_id) else {
         return;
@@ -24,12 +17,9 @@ pub async fn handle_screen_share(
             return;
         }
         room.presenter_id = Some(user_id.to_string());
-        room.presenter_stream_id = stream_id.map(|s| s.to_string());
 
         if let Some(participant) = room.participants.get_mut(user_id) {
             participant.is_presenter = true;
-            participant.screen_share_stream_id = stream_id.map(|s| s.to_string());
-            participant.camera_stream_id = camera_id.map(|c| c.to_string());
         }
     } else {
         // Only allow the active presenter to stop their own share
@@ -46,12 +36,8 @@ pub async fn handle_screen_share(
         json!({
         "type": msg_type,
         "peerId": user_id,
-        "stream_id": stream_id,
-        "camera_stream_id": camera_id,
         
-    })
-            .to_string()
-            .into()
+    }).to_string().into()
     );
 
     for sender in room.senders.values() {

@@ -75,10 +75,11 @@ async fn handle_sfu_pub_offer(
 ) {
     let pc = {
         let rooms = state.rooms.read().await;
+
         rooms
             .get(room_id)
             .and_then(|r| r.server_peers.get(sender_id))
-            .map(|sp| sp.pc.clone())
+            .map(|sp| sp.publisher_pc.clone())
     };
 
     if let Some(pc) = pc {
@@ -94,7 +95,17 @@ async fn handle_sfu_pub_offer(
         match pc.create_answer(None).await {
             Ok(answer) => {
                 if pc.set_local_description(answer.clone()).await.is_ok() {
+                    let msg = Message::Text(
+                        serde_json::json!({
+                    "type":"PUB_ANSWER",
+                    "payload":answer.sdp
+                })
+                            .to_string()
+                            .into()
+                    );
+
                     let rooms = state.rooms.read().await;
+
                     if let Some(room) = rooms.get(room_id) {
                         if
                             let Some((sid, _)) = room.sessions
@@ -102,23 +113,15 @@ async fn handle_sfu_pub_offer(
                                 .find(|(_, uid)| uid.as_str() == sender_id)
                         {
                             if let Some(tx) = room.senders.get(sid) {
-                                let answer_msg =
-                                    serde_json::json!({
-                                    "type": "SFU_PUB_ANSWER",
-                                    "payload": answer.sdp
-                                });
-                                let _ = tx.send(Message::Text(answer_msg.to_string().into()));
+                                let _ = tx.send(msg);
                             }
                         }
                     }
                 }
             }
-            Err(e) =>
-                log::error!(
-                    "[SFU] Failed to create SDP publisher answer for {}: {:?}",
-                    sender_id,
-                    e
-                ),
+            Err(e) => {
+                log::error!("Publisher answer failed {:?}", e);
+            }
         }
     }
 }
@@ -135,7 +138,7 @@ async fn handle_sfu_sub_answer(
         rooms
             .get(room_id)
             .and_then(|r| r.server_peers.get(sender_id))
-            .map(|sp| sp.pc.clone())
+            .map(|sp| sp.subscriber_pc.clone())
     };
 
     if let Some(pc) = pc {
@@ -155,14 +158,17 @@ async fn handle_sfu_ice(
     room_id: &str,
     sender_id: &str,
     candidate_str: &str,
-    _is_publisher: bool
+    is_publisher: bool
 ) {
     let pc = {
         let rooms = state.rooms.read().await;
+
         rooms
             .get(room_id)
             .and_then(|r| r.server_peers.get(sender_id))
-            .map(|sp| sp.pc.clone())
+            .map(|sp| {
+                if is_publisher { sp.publisher_pc.clone() } else { sp.subscriber_pc.clone() }
+            })
     };
 
     if let Some(pc) = pc {

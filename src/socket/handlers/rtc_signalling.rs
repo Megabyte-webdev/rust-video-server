@@ -87,18 +87,15 @@ impl ForwarderMetrics {
 // TRACK FORWARDER: CONVERTS TrackRemote → TrackLocal
 
 pub struct TrackForwarder {
-    /// Local track (destination)
     local_track: Arc<TrackLocalStaticRTP>,
-    /// Remote track (source)
     remote_track: Arc<TrackRemote>,
-    /// Track metadata
-    sender_id: String,
+
+    publisher_id: String,
+    subscriber_id: String,
+
     track_kind: String,
-    /// Metrics
     metrics: ForwarderMetrics,
-    /// Background forwarding task
     forwarding_task: Mutex<Option<JoinHandle<()>>>,
-    /// Configuration
     config: ForwarderConfig,
 }
 
@@ -127,16 +124,17 @@ impl TrackForwarder {
     pub fn new(
         local_track: Arc<TrackLocalStaticRTP>,
         remote_track: Arc<TrackRemote>,
-        sender_id: String,
+        publisher_id: String,
+        subscriber_id: String,
         config: ForwarderConfig
     ) -> Self {
         let track_kind = remote_track.kind().to_string();
-        log::info!("🔄 Creating forwarder for {} ({} track)", sender_id, track_kind);
-
+        log::info!("Creating forwarder {} -> {} ({})", publisher_id, subscriber_id, track_kind);
         Self {
             local_track,
             remote_track,
-            sender_id,
+            publisher_id,
+            subscriber_id,
             track_kind,
             metrics: ForwarderMetrics::new(),
             forwarding_task: Mutex::new(None),
@@ -149,7 +147,8 @@ impl TrackForwarder {
         let remote_track = self.remote_track.clone();
         let local_track = self.local_track.clone();
         let metrics = self.metrics.clone();
-        let sender_id = self.sender_id.clone();
+        let publisher_id = self.publisher_id.clone();
+        let subscriber_id = self.subscriber_id.clone();
         let track_kind = self.track_kind.clone();
         let config = self.config.clone();
 
@@ -159,7 +158,8 @@ impl TrackForwarder {
                     remote_track,
                     local_track,
                     metrics,
-                    sender_id,
+                    publisher_id,
+                    subscriber_id,
                     track_kind,
                     config
                 ).await
@@ -177,11 +177,17 @@ impl TrackForwarder {
         remote_track: Arc<TrackRemote>,
         local_track: Arc<TrackLocalStaticRTP>,
         metrics: ForwarderMetrics,
-        sender_id: String,
+        publisher_id: String,
+        subscriber_id: String,
         track_kind: String,
         config: ForwarderConfig
     ) -> SFUResult<()> {
-        log::info!("📤 Forwarding loop started for {} ({})", sender_id, track_kind);
+        log::info!(
+            "📤 Forwarding loop started for {} {} ({})",
+            publisher_id,
+            subscriber_id,
+            track_kind
+        );
 
         let mut packet_count = 0;
         let mut error_count = 0;
@@ -199,8 +205,9 @@ impl TrackForwarder {
                 Ok(Err(_)) => {
                     // Remote track ended
                     log::info!(
-                        "⚠️  Remote track ended for {} after {} packets",
-                        sender_id,
+                        "⚠️  Remote track ended for publisher {} subscriber {} after packets {}",
+                        publisher_id,
+                        subscriber_id,
                         packet_count
                     );
                     break;
@@ -209,7 +216,11 @@ impl TrackForwarder {
                     // Timeout - connection may be dead
                     error_count += 1;
                     if error_count >= MAX_CONSECUTIVE_ERRORS {
-                        log::warn!("❌ Multiple timeouts for {} - closing connection", sender_id);
+                        log::warn!(
+                            "❌ Multiple timeouts for {} {} - closing connection",
+                            publisher_id,
+                            subscriber_id
+                        );
                         return Err(SFUError::RtpReadError("Too many read timeouts".to_string()));
                     }
                     continue;
@@ -231,8 +242,9 @@ impl TrackForwarder {
                     // Log stats periodically
                     if packet_count % config.stats_interval == 0 {
                         log::debug!(
-                            "📊 [{}/{}] Forwarded {} packets ({} bytes)",
-                            sender_id,
+                            "📊 {} [{}/{}] Forwarded {} packets ({} bytes)",
+                            publisher_id,
+                            subscriber_id,
                             track_kind,
                             packet_count,
                             metrics.bytes_forwarded.load(Ordering::Relaxed)
@@ -242,7 +254,12 @@ impl TrackForwarder {
                 Err(e) => {
                     metrics.record_dropped();
                     metrics.record_error();
-                    log::warn!("❌ Failed to forward packet for {}: {}", sender_id, e);
+                    log::warn!(
+                        "❌ Failed to forward packet for {} {}: {}",
+                        publisher_id,
+                        subscriber_id,
+                        e
+                    );
 
                     // Don't fail on individual packet errors - just skip
                     // This is important for resilience
@@ -250,14 +267,19 @@ impl TrackForwarder {
             }
         }
 
-        log::info!("✅ Forwarding completed for {} (total: {} packets)", sender_id, packet_count);
+        log::info!(
+            "✅ Forwarding completed for {} {} (total: {} packets)",
+            publisher_id,
+            subscriber_id,
+            packet_count
+        );
         Ok(())
     }
 
     /// Stop forwarding and cleanup
     pub async fn stop(&self) {
         if let Some(task) = self.forwarding_task.lock().await.take() {
-            log::info!("Stopping forwarder for {}", self.sender_id);
+            log::info!("Stopping forwarder for {} {}", self.publisher_id, self.subscriber_id);
             task.abort();
         }
     }

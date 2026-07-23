@@ -60,11 +60,7 @@ RUN chmod +x ./rust-video-sdk
 USER appuser
 
 # Expose Axum port
-EXPOSE 3000
-
-# Optional healthcheck
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD ["./rust-video-sdk", "--help"]
+EXPOSE 8080
 
 # Start application
 CMD ["./rust-video-sdk"]

@@ -58,7 +58,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 let rid = value["room_id"].as_str().unwrap_or("").to_string();
                 let uid = value["user_id"].as_str().unwrap_or("").to_string();
                 name = value["sender_name"].as_str().unwrap_or("Anonymous").to_string();
-                let camera_stream_id = value["camera_stream_id"].as_str().map(|s| s.to_string());
                 let audio_muted = value["audio_muted"].as_bool();
                 let video_muted = value["video_muted"].as_bool();
 
@@ -526,7 +525,6 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             "SCREEN_SHARE_START" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     let stream_id = value.get("stream_id").and_then(|v| v.as_str());
-                    let camera_id = value.get("camera_id").and_then(|v| v.as_str());
                     handle_screen_share(&state, rid, uid, true, stream_id).await;
                 }
             }

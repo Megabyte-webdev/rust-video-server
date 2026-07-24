@@ -38,7 +38,7 @@ async fn main() {
         .expect("Failed to fetch DB URL");
 
     let db_pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(50)
         .connect(&db_url).await
         .expect("Failed to connect to Postgres");
 

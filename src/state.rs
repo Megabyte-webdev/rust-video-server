@@ -8,7 +8,6 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 use webrtc::{
     peer_connection::RTCPeerConnection,
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
     track::{ track_local::track_local_static_rtp::TrackLocalStaticRTP, track_remote::TrackRemote },
 };
 use crate::socket::{
@@ -78,35 +77,11 @@ impl TrackRepository {
         source: TrackSource,
         remote_track: Arc<TrackRemote>
     ) -> SFUResult<Arc<TrackForwarder>> {
-        let track_kind = remote_track.kind().to_string();
-
-        let codec = match track_kind.as_str() {
-            "audio" =>
-                RTCRtpCodecCapability {
-                    mime_type: "audio/opus".into(),
-                    clock_rate: 48000,
-                    channels: 2,
-                    sdp_fmtp_line: "".into(),
-                    rtcp_feedback: vec![],
-                },
-
-            "video" =>
-                RTCRtpCodecCapability {
-                    mime_type: "video/VP8".into(),
-                    clock_rate: 90000,
-                    channels: 0,
-                    sdp_fmtp_line: "".into(),
-                    rtcp_feedback: vec![],
-                },
-
-            _ => {
-                return Err(SFUError::CodecMismatch(format!("Unsupported {}", track_kind)));
-            }
-        };
+        let codec = remote_track.codec();
 
         let local_track = Arc::new(
             TrackLocalStaticRTP::new(
-                codec,
+                codec.capability,
                 format!("forward-{}", Uuid::new_v4()),
                 format!("stream-{}", Uuid::new_v4())
             )

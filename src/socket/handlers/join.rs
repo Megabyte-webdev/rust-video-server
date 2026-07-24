@@ -5,6 +5,7 @@ use base64::{ engine::general_purpose::STANDARD, Engine };
 use hmac::{ Hmac, Mac, KeyInit };
 use sha1::Sha1;
 use chrono::Utc;
+use webrtc::track::track_remote::TrackRemote;
 
 use crate::{
     services::{ attendance_service::AttendanceService, webrtc_util::create_server_peer_connection },
@@ -246,7 +247,6 @@ pub async fn handle_join(
             subscriber_pc,
         });
 
-        subscribe_existing_tracks(&state, &room_id, &user_id).await;
         // Build existing participants list
         let existing: Vec<_> = room.participants
             .values()
@@ -285,6 +285,7 @@ pub async fn handle_join(
     }; // ← WRITE LOCK RELEASED HERE
 
     println!("🔓 Released write lock after updating room state");
+    subscribe_existing_tracks(&state, &room_id, &user_id).await;
     broadcast_room_presence(state, room_id).await;
 
     // BROADCAST JOIN TO OTHERS
@@ -410,15 +411,22 @@ pub async fn handle_join(
     // Cross-subscribe new joiner to existing tracks
     let (new_pc, existing_tracks) = {
         let rooms = state.rooms.read().await;
+
         if let Some(room) = rooms.get(room_id) {
             let pc = room.server_peers.get(user_id).map(|sp| sp.subscriber_pc.clone());
-            let tracks: Vec<
-                (String, Arc<webrtc::track::track_remote::TrackRemote>)
-            > = room.published_tracks
+
+            let tracks: Vec<(String, TrackSource, Arc<TrackRemote>)> = room.published_tracks
                 .iter()
                 .filter(|(uid, _)| *uid != user_id)
-                .flat_map(|(uid, trs)| trs.iter().map(move |t| (uid.clone(), Arc::clone(t))))
+                .flat_map(|(uid, tracks)| {
+                    tracks
+                        .iter()
+                        .map(move |(source, track)| {
+                            (uid.clone(), source.clone(), Arc::clone(track))
+                        })
+                })
                 .collect();
+
             (pc, tracks)
         } else {
             (None, vec![])
@@ -426,7 +434,7 @@ pub async fn handle_join(
     };
 
     if let Some(ref pc) = new_pc {
-        for (publisher_id, track) in existing_tracks {
+        for (publisher_id, source, track) in existing_tracks {
             if
                 let Err(err) = state.track_repository.add_forwarder(
                     &state,
@@ -434,7 +442,7 @@ pub async fn handle_join(
                     &publisher_id,
                     user_id,
                     pc.clone(),
-                    TrackSource::Audio,
+                    source,
                     track
                 ).await
             {

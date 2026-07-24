@@ -1,6 +1,6 @@
 use nanoid::nanoid;
 
-use crate::state::{ AppState, TrackSource };
+use crate::state::{ AppState };
 
 const ALPHABET: &[char] = &[
     'a',
@@ -58,28 +58,20 @@ pub async fn subscribe_existing_tracks(state: &AppState, room_id: &str, subscrib
     };
 
     for (publisher_id, tracks) in existing_tracks {
-        for track in tracks {
-            let source = match track.kind().to_string().as_str() {
-                "audio" => TrackSource::Audio,
-                "video" => TrackSource::Camera,
-                _ => {
-                    continue;
-                }
-            };
-
+        for (source, track) in tracks {
             let subscriber_pc = {
                 let rooms = state.rooms.read().await;
 
-                rooms
-                    .get(room_id)
-                    .unwrap()
-                    .server_peers.get(subscriber_id)
-                    .unwrap()
-                    .subscriber_pc.clone()
+                match rooms.get(room_id).and_then(|room| room.server_peers.get(subscriber_id)) {
+                    Some(peer) => peer.subscriber_pc.clone(),
+                    None => {
+                        continue;
+                    }
+                }
             };
 
-            state.track_repository
-                .add_forwarder(
+            if
+                let Err(err) = state.track_repository.add_forwarder(
                     state,
                     room_id,
                     &publisher_id,
@@ -88,7 +80,14 @@ pub async fn subscribe_existing_tracks(state: &AppState, room_id: &str, subscrib
                     source,
                     track
                 ).await
-                .unwrap();
+            {
+                log::error!(
+                    "Failed forwarding existing track {} -> {}: {:?}",
+                    publisher_id,
+                    subscriber_id,
+                    err
+                );
+            }
         }
     }
 }

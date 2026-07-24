@@ -78,7 +78,7 @@ pub async fn create_server_peer_connection(
                             room.published_tracks
                                 .entry(user_id.clone())
                                 .or_default()
-                                .push(remote_track.clone());
+                                .push((source.clone(), remote_track.clone()));
                         }
                     }
 

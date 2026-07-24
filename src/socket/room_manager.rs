@@ -6,6 +6,8 @@ use axum::extract::ws::Message;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_remote::TrackRemote;
 
+use crate::state::TrackSource;
+
 #[derive(Clone)]
 pub struct ServerPeer {
     pub user_id: String,
@@ -13,19 +15,19 @@ pub struct ServerPeer {
     pub subscriber_pc: Arc<RTCPeerConnection>,
 }
 
-impl ServerPeer {
-    pub fn new(
-        user_id: String,
-        publisher_pc: Arc<RTCPeerConnection>,
-        subscriber_pc: Arc<RTCPeerConnection>
-    ) -> Self {
-        Self {
-            user_id,
-            publisher_pc,
-            subscriber_pc,
-        }
-    }
-}
+// impl ServerPeer {
+//     pub fn new(
+//         user_id: String,
+//         publisher_pc: Arc<RTCPeerConnection>,
+//         subscriber_pc: Arc<RTCPeerConnection>
+//     ) -> Self {
+//         Self {
+//             user_id,
+//             publisher_pc,
+//             subscriber_pc,
+//         }
+//     }
+// }
 
 #[derive(Clone)]
 pub struct ParticipantState {
@@ -73,7 +75,7 @@ pub struct Room {
     pub pending_requests: HashMap<String, JoinRequest>,
     pub approved_users: HashSet<String>,
     pub server_peers: HashMap<String, ServerPeer>,
-    pub published_tracks: HashMap<String, Vec<Arc<TrackRemote>>>,
+    pub published_tracks: HashMap<String, Vec<(TrackSource, Arc<TrackRemote>)>>,
 }
 
 pub type Rooms = Arc<RwLock<HashMap<String, Room>>>;

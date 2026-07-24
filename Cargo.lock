@@ -2671,6 +2671,7 @@ dependencies = [
  "jsonwebtoken",
  "log",
  "nanoid",
+ "parking_lot",
  "rand 0.10.2",
  "redis",
  "reqwest",

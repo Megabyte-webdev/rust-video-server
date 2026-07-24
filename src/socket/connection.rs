@@ -144,6 +144,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                                 sessions: HashMap::new(),
                                 senders: HashMap::new(),
                                 presenter_id: None,
+                                presenter_stream_id: None,
                                 host_id: host_id.clone(),
                                 is_open: Some(false),
                                 pending_requests: HashMap::new(),
@@ -526,13 +527,13 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
                     let stream_id = value.get("stream_id").and_then(|v| v.as_str());
                     let camera_id = value.get("camera_id").and_then(|v| v.as_str());
-                    handle_screen_share(&state, rid, uid, true).await;
+                    handle_screen_share(&state, rid, uid, true, stream_id).await;
                 }
             }
 
             "SCREEN_SHARE_STOP" => {
                 if let (Some(rid), Some(uid)) = (&room_id, &user_id) {
-                    handle_screen_share(&state, rid, uid, false).await;
+                    handle_screen_share(&state, rid, uid, false, None).await;
                 }
             }
 

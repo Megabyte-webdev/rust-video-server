@@ -196,6 +196,7 @@ pub async fn handle_join(
             sessions: HashMap::new(),
             senders: HashMap::new(),
             presenter_id: None,
+            presenter_stream_id: None,
             host_id: host_id.clone(),
             is_open: Some(false),
             pending_requests: HashMap::new(),

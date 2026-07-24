@@ -22,7 +22,14 @@ pub enum TrackSource {
     Screen,
     Audio,
 }
-// ============ TURN CONFIGURATION ============
+
+#[derive(Clone, Serialize)]
+pub struct TrackDescriptor {
+    pub id: String,
+    pub publisher_id: String,
+    pub source: TrackSource, // camera | screen | audio
+}
+//  TURN CONFIGURATION
 #[derive(Clone, Debug)]
 pub struct TurnConfig {
     pub server: String,
@@ -123,13 +130,18 @@ impl TrackRepository {
             .set_local_description(offer.clone()).await
             .map_err(|e| SFUError::ConnectionError(e.to_string()))?;
 
+        let descriptor = TrackDescriptor {
+            id: Uuid::new_v4().to_string(),
+            publisher_id: sender_id.to_string(),
+            source,
+        };
+
         let msg = Message::Text(
             json!({
-                "type":"SUB_OFFER",
-                "payload":offer.sdp,
-                "publisher_id":sender_id,
-                 "source": source
-            })
+                    "type":"SUB_OFFER",
+                    "payload":offer.sdp,
+                    "track": descriptor
+                })
                 .to_string()
                 .into()
         );

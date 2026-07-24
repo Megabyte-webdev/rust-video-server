@@ -10,8 +10,6 @@ use webrtc::track::track_remote::TrackRemote;
 pub struct ServerPeer {
     pub user_id: String,
     pub publisher_pc: Arc<RTCPeerConnection>,
-
-    // SFU -> Client
     pub subscriber_pc: Arc<RTCPeerConnection>,
 }
 
@@ -69,6 +67,7 @@ pub struct Room {
     pub sessions: HashMap<String, String>,
     pub senders: HashMap<String, ClientSender>,
     pub presenter_id: Option<String>,
+    pub presenter_stream_id: Option<String>,
     pub host_id: Option<String>,
     pub is_open: Option<bool>,
     pub pending_requests: HashMap<String, JoinRequest>,

@@ -67,19 +67,7 @@ pub async fn create_server_peer_connection(
 
                     let source = match remote_track.kind().to_string().as_str() {
                         "audio" => TrackSource::Audio,
-
-                        "video" => {
-                            let stream_id = remote_track.stream_id();
-
-                            log::info!("Video track {} stream {}", remote_track.id(), stream_id);
-
-                            if stream_id.contains("screen") {
-                                TrackSource::Screen
-                            } else {
-                                TrackSource::Camera
-                            }
-                        }
-
+                        "video" => TrackSource::Camera,
                         _ => TrackSource::Camera,
                     };
 

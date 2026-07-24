@@ -7,7 +7,7 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::RTCPeerConnection;
 
-use crate::state::{ AppState, TrackSource };
+use crate::state::{ AppState, TrackSource, TurnConfig };
 
 pub async fn create_webrtc_api() -> Result<Arc<webrtc::api::API>, Box<dyn std::error::Error>> {
     // In webrtc 0.17.1, SettingEngine is private and embedded in APIBuilder
@@ -35,16 +35,27 @@ pub async fn create_server_peer_connection(
         .with_interceptor_registry(registry)
         .build();
 
+    let (turn_username, turn_password) = TurnConfig::generate_turn_credentials(
+        &state.turn_config.auth_secret,
+        user_id
+    );
+
     let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec![
-                format!("stun:{}", state.turn_config.server),
-                format!("turn:{}?transport=udp", state.turn_config.server)
-            ],
-            username: format!("sfu_user_{}", user_id),
-            credential: state.turn_config.auth_secret.clone(),
-            ..Default::default()
-        }],
+        ice_servers: vec![
+            RTCIceServer {
+                urls: vec![format!("stun:{}:3478", state.turn_config.server)],
+                ..Default::default()
+            },
+            RTCIceServer {
+                urls: vec![
+                    format!("turn:{}:3478?transport=udp", state.turn_config.server),
+                    format!("turn:{}:3478?transport=tcp", state.turn_config.server)
+                ],
+                username: turn_username,
+                credential: turn_password,
+                ..Default::default()
+            }
+        ],
         ..Default::default()
     };
 

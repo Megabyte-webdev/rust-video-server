@@ -15,6 +15,11 @@ use crate::socket::{
     room_manager::{ ClientSender, Rooms },
 };
 
+use base64::{ engine::general_purpose::STANDARD, Engine };
+use chrono::Utc;
+use hmac::{ Hmac, KeyInit, Mac };
+use sha1::Sha1;
+
 #[derive(Clone, Debug, Serialize)]
 pub enum TrackSource {
     Camera,
@@ -45,6 +50,19 @@ impl TurnConfig {
                 ::var("TURN_AUTH_SECRET")
                 .map_err(|_| "TURN_AUTH_SECRET environment variable must be set".to_string())?,
         })
+    }
+    pub fn generate_turn_credentials(secret: &str, user_id: &str) -> (String, String) {
+        let expiration = Utc::now().timestamp() + 24 * 3600;
+
+        let username = format!("{}:{}", expiration, user_id);
+
+        let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).unwrap();
+
+        mac.update(username.as_bytes());
+
+        let credential = STANDARD.encode(mac.finalize().into_bytes());
+
+        (username, credential)
     }
 }
 

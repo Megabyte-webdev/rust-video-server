@@ -14,7 +14,7 @@ use crate::{
         room_manager::{ ClientSender, ParticipantState, Room, ServerPeer },
     },
     state::{ AppState, TrackSource },
-    utils::error::error_msg,
+    utils::{ error::error_msg, helper::subscribe_existing_tracks },
 };
 
 pub async fn handle_join(
@@ -245,6 +245,8 @@ pub async fn handle_join(
             publisher_pc,
             subscriber_pc,
         });
+
+        subscribe_existing_tracks(&state, &room_id, &user_id).await;
         // Build existing participants list
         let existing: Vec<_> = room.participants
             .values()
